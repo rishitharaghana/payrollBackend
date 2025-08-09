@@ -1,13 +1,31 @@
-const express = require('express');
-const cors = require('cors');
-
+const express = require("express");
+const cors = require("cors");
 const app = express();
+const authRouter = require("./routes/authRoutes");
+const userRouter = require('./routes/userRoutes');
+const employeeRouter = require('./routes/employeeRoutes');
+const departmentRouter = require('./routes/departmentRoutes');
+const attendanceRouter = require('./routes/attendanceRoutes');
+const leaveRouter = require('./routes/leaveRoutes');
+const payrollRouter = require('./routes/payrollRoutes')
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+app.get("/", (req, res) => {
+  res.send("Hello world");
+});
+
+app.use("/api", authRouter);
+app.use('/api', userRouter);
+app.use('/api', employeeRouter);
+app.use('/api', departmentRouter);
+app.use('/api', attendanceRouter);
+app.use('/api', leaveRouter);
+app.use('/api', payrollRouter);
+
+
+const port = 3007;
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
 });

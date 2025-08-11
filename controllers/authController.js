@@ -7,36 +7,42 @@ require("dotenv").config();
 const JWT_SECRET = process.env.JWT_SECRET;
 const queryAsync = util.promisify(pool.query).bind(pool);
 
-const loginUser = async (req, res) => {
-  const { mobile, password } = req.body;
 
-  if (!mobile || !password) {
+const loginUser = async (req, res) => {
+  const { mobile, password, role } = req.body;
+
+  if (!mobile || !password || !role) {
     return res.status(400).json({
       success: false,
-      error: "Mobile Number and password are required for login",
+      error: 'Mobile Number, password, and role are required for login',
     });
   }
 
   try {
-    const userResult = await queryAsync(
-      "SELECT * FROM hrms_users WHERE mobile = ?",
-      [mobile]
-    );
+    const userResult = await queryAsync('SELECT * FROM hrms_users WHERE mobile = ?', [mobile]);
 
     if (userResult.length === 0) {
       return res.status(401).json({
         success: false,
-        error: "Invalid Mobile Number",
+        error: 'Invalid Mobile Number',
       });
     }
 
     const user = userResult[0];
+
+    if (user.role !== role) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid Role',
+      });
+    }
+
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
-        error: "Invalid Password",
+        error: 'Invalid Password',
       });
     }
 
@@ -47,22 +53,24 @@ const loginUser = async (req, res) => {
         department: user.department,
       },
       JWT_SECRET,
-      { expiresIn: "1d" }
+      { expiresIn: '1d' }
     );
 
     return res.status(200).json({
       success: true,
-      message: "Login successful",
+      message: 'Login successful',
       token,
       role: user.role,
+      mobile: user.mobile,
     });
   } catch (error) {
-    console.error("Login Error:", error);
+    console.error('Login Error:', error);
     return res.status(500).json({
       success: false,
-      error: "Server Error",
+      error: 'Server Error',
     });
   }
 };
+
 
 module.exports = { loginUser };

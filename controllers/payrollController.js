@@ -27,7 +27,6 @@ const createPayroll = async (req, res) => {
     month,
   } = req.body;
 
-  // Basic validations
   if (!name || typeof name !== "string" || name.trim() === "") {
     return res.status(400).json({ error: "Invalid or missing employee name" });
   }
@@ -38,16 +37,13 @@ const createPayroll = async (req, res) => {
     return res.status(400).json({ error: "Invalid or missing department" });
   }
 
-  // Validate month format YYYY-MM, optional - if not provided, use current month
   const monthRegex = /^\d{4}-(0[1-9]|1[0-2])$/;
   let payrollMonth = month;
   if (!payrollMonth || !monthRegex.test(payrollMonth)) {
-    // fallback to current month like "2025-08"
     const now = new Date();
     payrollMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   }
 
-  // Validate salaries and deductions - must be numbers >= 0
   const numFields = { grossSalary, pfDeduction, esicDeduction, netSalary };
   for (const [key, value] of Object.entries(numFields)) {
     if (value === undefined || isNaN(value) || Number(value) < 0) {

@@ -1,14 +1,12 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const { authenticateToken } = require("../middleware/authenticate");
-const {
-  getEmployees,
-  getEmployeeById,
-  getEmployeesByDeptHead,
-} = require("../controllers/employeeController");
+const {authenticateToken} = require('../middleware/authenticate');
+const {  createEmployee, fetchEmployees, updateEmployee, deleteEmployee } = require('../controllers/employeeController');
 
-router.get("/employees", authenticateToken, getEmployees);
-router.get("/employees/:id", authenticateToken, getEmployeeById);
-router.get("/employees/dept", authenticateToken, getEmployeesByDeptHead);
+router.post('/employees',authenticateToken,createEmployee);
+router.get('/employees',authenticateToken,fetchEmployees);
+// router.get('/employee/:id', authenticateToken, getUserById);
+router.put('/employees/:id', authenticateToken, updateEmployee);
+router.delete('/employees/:id', authenticateToken, deleteEmployee);
 
-module.exports = router;
+module.exports= router;

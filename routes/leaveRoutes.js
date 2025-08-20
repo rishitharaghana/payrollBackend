@@ -1,10 +1,11 @@
 const express = require("express");
 const router = express.Router();
 const { authenticateToken } = require("../middleware/authenticate");
-const { getLeaves, applyLeave, updateLeaveStatus } = require("../controllers/leaveController");
+const { getLeaves, applyLeave, updateLeaveStatus, getPendingLeaves } = require("../controllers/leaveController");
 
-router.get("/leave", authenticateToken, getLeaves);
-router.post("/leave/status", authenticateToken, applyLeave);
-router.put('/leave/:id', authenticateToken, updateLeaveStatus);
+router.get("/leaves", authenticateToken, getLeaves);
+router.post("/leaves", authenticateToken, applyLeave);
+router.put('/leaves/:id', authenticateToken, updateLeaveStatus);
+router.get('/leaves', authenticateToken, getPendingLeaves)
 
 module.exports = router;

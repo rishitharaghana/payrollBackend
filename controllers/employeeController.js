@@ -40,8 +40,12 @@ const createEmployee = async (req, res) => {
     return res.status(400).json({ error: "Invalid email format" });
   }
 
-  const table = role === "hr" ? "hrs" :
-                role === "dept_head" ? "dept_heads" : "employees";
+  // Validate mobile and emergency_phone are not the same
+  if (emergency_phone && emergency_phone.trim() === mobile.trim()) {
+    return res.status(400).json({ error: "Mobile and emergency contact numbers cannot be the same" });
+  }
+
+  const table = role === "hr" ? "hrs" : role === "dept_head" ? "dept_heads" : "employees";
 
   if (["dept_head", "employee"].includes(role)) {
     if (!department_name || !designation_name) {
@@ -66,16 +70,51 @@ const createEmployee = async (req, res) => {
   }
 
   try {
-    const [existing] = await queryAsync(
-      `SELECT * FROM ${table} WHERE TRIM(LOWER(email)) = ? OR TRIM(mobile) = ?`,
-      [email.trim().toLowerCase(), mobile.trim()]
+    // Check for duplicate mobile across all tables
+    const [existingMobile] = await queryAsync(
+      `SELECT mobile FROM (
+        SELECT mobile FROM hrs WHERE TRIM(mobile) = ?
+        UNION
+        SELECT mobile FROM dept_heads WHERE TRIM(mobile) = ?
+        UNION
+        SELECT mobile FROM employees WHERE TRIM(mobile) = ?
+      ) AS all_users`,
+      [mobile.trim(), mobile.trim(), mobile.trim()]
     );
-    if (existing) {
-      return res.status(400).json({ error: "Email or mobile already in use" });
+    if (existingMobile) {
+      return res.status(400).json({ error: "Mobile number already in use" });
+    }
+
+    // Check for duplicate email in the target table
+    const [existingEmail] = await queryAsync(
+      `SELECT * FROM ${table} WHERE TRIM(LOWER(email)) = ?`,
+      [email.trim().toLowerCase()]
+    );
+    if (existingEmail) {
+      return res.status(400).json({ error: "Email already in use" });
+    }
+
+    // Generate employee ID across all tables
+    let employeeId;
+    const prefix = "MO-EMP-";
+    const [lastEmployee] = await queryAsync(
+      `SELECT employee_id FROM (
+        SELECT employee_id FROM hrs WHERE employee_id LIKE ? 
+        UNION 
+        SELECT employee_id FROM dept_heads WHERE employee_id LIKE ? 
+        UNION 
+        SELECT employee_id FROM employees WHERE employee_id LIKE ?
+      ) AS all_employees ORDER BY CAST(SUBSTRING(employee_id, LENGTH(?) + 1) AS UNSIGNED) DESC LIMIT 1`,
+      [`${prefix}%`, `${prefix}%`, `${prefix}%`, prefix]
+    );
+    if (lastEmployee) {
+      const lastNumber = parseInt(lastEmployee.employee_id.replace(prefix, ""));
+      employeeId = `${prefix}${String(lastNumber + 1).padStart(3, "0")}`;
+    } else {
+      employeeId = `${prefix}001`;
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const employeeId = `EMP${Date.now()}${Math.floor(Math.random() * 1000)}`;
 
     let query, values;
     if (role === "hr") {
@@ -119,8 +158,8 @@ const createEmployee = async (req, res) => {
 
 const updateEmployee = async (req, res) => {
   const userRole = req.user.role;
-  const { role, id } = req.params;
-  const { name, email, mobile, emergency_phone, address } = req.body;
+  const { id } = req.params;
+  const { name, email, mobile, emergency_phone, address, role } = req.body;
 
   if (!["super_admin", "hr"].includes(userRole) && userRole !== role) {
     return res.status(403).json({ error: "Access denied: Insufficient permissions to update this record" });
@@ -129,8 +168,8 @@ const updateEmployee = async (req, res) => {
     return res.status(403).json({ error: "HR cannot update HR accounts" });
   }
 
-  if (!name?.trim() || !email?.trim() || !mobile?.trim()) {
-    return res.status(400).json({ error: "Name, email, and mobile are required for update" });
+  if (!name?.trim() || !email?.trim() || !mobile?.trim() || !role) {
+    return res.status(400).json({ error: "Name, email, mobile, and role are required for update" });
   }
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -138,6 +177,7 @@ const updateEmployee = async (req, res) => {
   }
 
   const table = role === "hr" ? "hrs" : role === "dept_head" ? "dept_heads" : "employees";
+
   try {
     const emailCheck = await queryAsync(
       `SELECT * FROM ${table} WHERE email = ? AND id != ?`,
@@ -186,7 +226,8 @@ const fetchEmployees = async (req, res) => {
 
 const deleteEmployee = async (req, res) => {
   const userRole = req.user.role;
-  const { role, id } = req.params;
+  const { id } = req.params;
+  const { role } = req.body;
 
   if (!["super_admin", "hr"].includes(userRole)) {
     return res.status(403).json({ error: "Access denied: Insufficient permissions to delete this record" });
@@ -195,9 +236,12 @@ const deleteEmployee = async (req, res) => {
     return res.status(403).json({ error: "HR cannot delete HR accounts" });
   }
 
+  if (!role) {
+    return res.status(400).json({ error: "Role is required for deletion" });
+  }
+
   const table = role === "hr" ? "hrs" : role === "dept_head" ? "dept_heads" : "employees";
 
-  // Check dependencies for Employees (payroll records)
   if (role === "employee") {
     try {
       const payrollCheck = await queryAsync(
@@ -226,4 +270,36 @@ const deleteEmployee = async (req, res) => {
   }
 };
 
-module.exports = { createEmployee, updateEmployee, fetchEmployees, deleteEmployee };
+const getCurrentUserProfile = async (req, res) => {
+  const userRole = req.user.role;
+  const userId = req.user.id;
+
+  try {
+    let query, table;
+    if (userRole === "hr") {
+      table = "hrs";
+      query = "SELECT id, employee_id, name, email, mobile, 'hr' as role FROM hrs WHERE id = ?";
+    } else if (userRole === "dept_head") {
+      table = "dept_heads";
+      query = "SELECT id, employee_id, name, email, mobile, department_name, designation_name, 'dept_head' as role FROM dept_heads WHERE id = ?";
+    } else if (userRole === "employee") {
+      table = "employees";
+      query = "SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, 'employee' as role FROM employees WHERE id = ?";
+    } else {
+      return res.status(403).json({ error: "Invalid user role" });
+    }
+
+    const [user] = await queryAsync(query, [userId]);
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({ message: "User profile fetched successfully", data: user });
+  } catch (err) {
+    console.error("DB error:", err);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+module.exports = { createEmployee, updateEmployee, fetchEmployees, deleteEmployee, getCurrentUserProfile };

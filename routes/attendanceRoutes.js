@@ -1,9 +1,11 @@
 const express = require("express");
 const router = express.Router();
 const { authenticateToken } = require("../middleware/authenticate");
-const { getAttendance, markAttendance } = require("../controllers/attendanceController");
+const {  markAttendance, fetchEmployeeAttendance, fetchAllAttendance, updateAttendanceStatus } = require("../controllers/attendanceController");
 
-router.get("/attendance", authenticateToken, getAttendance);
+router.get("/attendance/employee", authenticateToken, fetchEmployeeAttendance );
+router.get("/attendance/getAll", authenticateToken, fetchAllAttendance)
 router.post("/attendance", authenticateToken, markAttendance);
+router.put('/attendance/status/:id', authenticateToken, updateAttendanceStatus);
 
 module.exports = router;

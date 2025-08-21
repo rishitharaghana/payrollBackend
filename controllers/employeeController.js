@@ -20,7 +20,7 @@ const createEmployee = async (req, res) => {
     allowances,
     join_date,
   } = req.body;
-  const role = req.body.role || "employee";
+  const role = req.body.role || "hr";
 
   console.log("req.user:", req.user);
   console.log("Request body:", req.body);

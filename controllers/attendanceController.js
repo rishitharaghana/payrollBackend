@@ -150,7 +150,6 @@ const fetchAllAttendance = async (req, res) => {
     }
 
     const attendance = await queryAsync(query, params);
-    console.log('Fetched attendance records:', attendance);
 
     res.json({
       message: 'All attendance records fetched successfully',

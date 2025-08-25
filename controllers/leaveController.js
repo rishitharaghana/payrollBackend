@@ -3,8 +3,35 @@ const pool = require("../config/db");
 
 const queryAsync = util.promisify(pool.query).bind(pool);
 
+const calculateLeaveDays = async (startDate, endDate) => {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (isNaN(start) || isNaN(end)) return 0;
+
+  let holidayDates = [];
+  try {
+    const holidays = await queryAsync("SELECT date FROM holidays WHERE date BETWEEN ? AND ?", [
+      startDate,
+      endDate,
+    ]);
+    holidayDates = holidays.map((h) => h.date);
+  } catch (err) {
+    console.error("Error querying holidays table:", err.sqlMessage || err.message);
+    holidayDates = [];
+  }
+
+  let days = 0;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    const isHoliday = holidayDates.includes(dateStr);
+    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+    if (!isHoliday && !isWeekend) days++;
+  }
+  return days;
+};
+
 const applyLeave = async (req, res) => {
-  const { role } = req.user;
+  const { role, employee_id } = req.user;
   const { start_date, end_date, reason, leave_type, recipient_id } = req.body;
 
   if (!start_date || !end_date || !reason || !leave_type || !recipient_id) {
@@ -18,7 +45,6 @@ const applyLeave = async (req, res) => {
   }
 
   try {
-    // Validate recipient based on role
     let isValidRecipient = false;
     if (role === "employee" || role === "dept_head") {
       const hrCheck = await queryAsync(
@@ -38,29 +64,39 @@ const applyLeave = async (req, res) => {
       return res.status(400).json({ error: "Invalid recipient for your role" });
     }
 
-    // Insert leave request without total_days
+    const total_days = await calculateLeaveDays(start_date, end_date);
+    if (total_days === 0) {
+      return res.status(400).json({ error: "Invalid date range" });
+    }
+    const [balance] = await queryAsync(
+      "SELECT balance FROM leave_balances WHERE employee_id = ? AND leave_type = ?",
+      [employee_id, leave_type]
+    );
+    if (!balance || balance.balance < total_days) {
+      return res.status(400).json({ error: `Insufficient ${leave_type} leave balance` });
+    }
+
     const leaveQuery = `
-      INSERT INTO leaves (start_date, end_date, reason, leave_type, status)
-      VALUES (?, ?, ?, ?, 'Pending')
+      INSERT INTO leaves (employee_id, start_date, end_date, reason, leave_type, status, total_days)
+      VALUES (?, ?, ?, ?, ?, 'Pending', ?)
     `;
     const leaveResult = await queryAsync(leaveQuery, [
+      employee_id,
       start_date,
       end_date,
       reason,
       leave_type,
+      total_days,
     ]);
 
     const leave_id = leaveResult.insertId;
-
-    // Insert recipient
     await queryAsync(
       "INSERT INTO leave_recipients (leave_id, recipient_id) VALUES (?, ?)",
       [leave_id, recipient_id]
     );
 
-    // Fetch the inserted leave to include total_days in the response
     const fetchQuery = `
-      SELECT id, start_date, end_date, reason, leave_type, status, total_days
+      SELECT id, employee_id, start_date, end_date, reason, leave_type, status, total_days
       FROM leaves WHERE id = ?
     `;
     const [newLeave] = await queryAsync(fetchQuery, [leave_id]);
@@ -74,14 +110,17 @@ const applyLeave = async (req, res) => {
     res.status(500).json({ error: "Database error", details: err.sqlMessage || err.message });
   }
 };
+
 const getPendingLeaves = async (req, res) => {
+  const { employee_id } = req.user;
+  console.log("getPendingLeaves - req.user.employee_id:", employee_id); // Debug log
+
   try {
-    const { user_id } = req.user; // Adjust for nullable employee_id if needed
     const query = `
       SELECT l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
              l.status, l.approved_by, l.approved_at, l.total_days,
-             COALESCE(e.name, dh.name, h.name, 'Unknown') AS employee_name,
-             COALESCE(e.department_name, dh.department_name, 'HR') AS department,
+             COALESCE(MAX(e.name), MAX(dh.name), MAX(h.name), 'Unknown') AS employee_name,
+             COALESCE(MAX(e.department_name), MAX(dh.department_name), MAX(h.department_name), 'Unknown') AS department,
              GROUP_CONCAT(COALESCE(h_rec.name, 'Unknown')) AS recipient_names
       FROM leaves l
       JOIN leave_recipients lr ON l.id = lr.leave_id
@@ -91,10 +130,10 @@ const getPendingLeaves = async (req, res) => {
       LEFT JOIN hrs h_rec ON lr.recipient_id = h_rec.employee_id
       WHERE lr.recipient_id = ? AND l.status = 'Pending'
       GROUP BY l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
-               l.status, l.approved_by, l.approved_at, l.total_days,
-               e.name, e.department_name, dh.name, dh.department_name, h.name
+               l.status, l.approved_by, l.approved_at, l.total_days
+      ORDER BY l.id
     `;
-    const rows = await queryAsync(query, [user_id || null]);
+    const rows = await queryAsync(query, [employee_id]);
     rows.forEach((row) => {
       row.recipients = row.recipient_names ? row.recipient_names.split(",") : [];
       delete row.recipient_names;
@@ -105,14 +144,17 @@ const getPendingLeaves = async (req, res) => {
     res.status(500).json({ error: "Database error", details: err.sqlMessage });
   }
 };
+
 const getAllLeaves = async (req, res) => {
+  const { employee_id, role } = req.user;
+  console.log("getAllLeaves - req.user.employee_id:", employee_id); // Debug log
+
   try {
-    const { user_id, role } = req.user;
     let query = `
       SELECT l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
              l.status, l.approved_by, l.approved_at, l.total_days,
-             COALESCE(e.name, dh.name, h.name, 'Unknown') AS employee_name,
-             COALESCE(e.department_name, dh.department_name, 'HR') AS department,
+             COALESCE(MAX(e.name), MAX(dh.name), MAX(h.name), 'Unknown') AS employee_name,
+             COALESCE(MAX(e.department_name), MAX(dh.department_name), MAX(h.department_name), 'Unknown') AS department,
              GROUP_CONCAT(COALESCE(h_rec.name, 'Unknown')) AS recipient_names
       FROM leaves l
       LEFT JOIN leave_recipients lr ON l.id = lr.leave_id
@@ -123,22 +165,15 @@ const getAllLeaves = async (req, res) => {
     `;
     const params = [];
 
-    // Adjust WHERE clause based on role
     if (role === "hr") {
       query += ` WHERE lr.recipient_id = ?`;
-      params.push(user_id);
-    } else if (role === "super_admin") {
-      // Super admins see all leaves; no WHERE clause needed
-    } else {
+      params.push(employee_id);
+    } else if (role !== "super_admin") {
       return res.status(403).json({ error: "Unauthorized role" });
     }
 
-    query += `
-      GROUP BY l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
-               l.status, l.approved_by, l.approved_at, l.total_days,
-               e.name, e.department_name, dh.name, dh.department_name, h.name
-    `;
-
+    query += ` GROUP BY l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
+                      l.status, l.approved_by, l.approved_at, l.total_days`;
     const rows = await queryAsync(query, params);
     rows.forEach((row) => {
       row.recipients = row.recipient_names ? row.recipient_names.split(",") : [];
@@ -150,9 +185,10 @@ const getAllLeaves = async (req, res) => {
     res.status(500).json({ error: "Database error", details: err.sqlMessage });
   }
 };
+
 const updateLeaveStatus = async (req, res) => {
   const { leave_id, status } = req.body;
-  const { user_id, role } = req.user;
+  const { employee_id, role } = req.user;
 
   if (!leave_id || !status || !["Approved", "Rejected"].includes(status)) {
     return res
@@ -167,7 +203,7 @@ const updateLeaveStatus = async (req, res) => {
   try {
     const recipientCheck = await queryAsync(
       "SELECT * FROM leave_recipients WHERE leave_id = ? AND recipient_id = ?",
-      [leave_id, user_id]
+      [leave_id, employee_id]
     );
     if (!recipientCheck.length) {
       return res.status(403).json({ error: "You are not authorized to update this leave" });
@@ -178,36 +214,66 @@ const updateLeaveStatus = async (req, res) => {
       SET status = ?, approved_by = ?, approved_at = NOW()
       WHERE id = ?
     `;
-    await queryAsync(query, [status, user_id, leave_id]);
+    await queryAsync(query, [status, employee_id, leave_id]);
+
+    if (status === "Approved") {
+      const [leave] = await queryAsync("SELECT * FROM leaves WHERE id = ?", [leave_id]);
+      const total_days = leave.total_days;
+      await queryAsync(
+        "UPDATE leave_balances SET balance = balance - ? WHERE employee_id = ? AND leave_type = ?",
+        [total_days, leave.employee_id, leave.leave_type]
+      );
+
+      for (let d = new Date(leave.start_date); d <= new Date(leave.end_date); d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().split("T")[0];
+        let holidayDates = [];
+        try {
+          const holidays = await queryAsync("SELECT date FROM holidays WHERE date = ?", [dateStr]);
+          holidayDates = holidays.map((h) => h.date);
+        } catch (err) {
+          console.error("Error querying holidays in updateLeaveStatus:", err.sqlMessage || err.message);
+          holidayDates = [];
+        }
+        if (holidayDates.length === 0 && d.getDay() !== 0 && d.getDay() !== 6) {
+          await queryAsync(
+            "INSERT INTO attendance (employee_id, date, status, recipient, location, created_at) VALUES (?, ?, ?, ?, ?, NOW())",
+            [leave.employee_id, dateStr, "Approved", employee_id, "Leave"]
+          );
+        }
+      }
+    }
 
     res.json({ message: `Leave ${status.toLowerCase()} successfully`, leave_id });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    console.error("DB error:", err);
+    res.status(500).json({ error: "Database error", details: err.sqlMessage });
   }
 };
+
 const getLeaves = async (req, res) => {
+  const { employee_id } = req.user;
+
   try {
-    const { user_id } = req.user;
     const query = `
       SELECT l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
              l.status, l.approved_by, l.approved_at, l.total_days,
-             COALESCE(e.name, dh.name, h.name) AS employee_name, 
-             COALESCE(e.department_name, dh.department_name, 'HR') AS department,
-             GROUP_CONCAT(lr.recipient_id) AS recipients
+             COALESCE(MAX(e.name), MAX(dh.name), MAX(h.name), 'Unknown') AS employee_name,
+             COALESCE(MAX(e.department_name), MAX(dh.department_name), MAX(h.department_name), 'Unknown') AS department,
+             GROUP_CONCAT(COALESCE(h_rec.name, 'Unknown')) AS recipient_names
       FROM leaves l
       LEFT JOIN leave_recipients lr ON l.id = lr.leave_id
       LEFT JOIN employees e ON l.employee_id = e.employee_id
       LEFT JOIN dept_heads dh ON l.employee_id = dh.employee_id
       LEFT JOIN hrs h ON l.employee_id = h.employee_id
+      LEFT JOIN hrs h_rec ON lr.recipient_id = h_rec.employee_id
       WHERE l.employee_id = ?
       GROUP BY l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
-               l.status, l.approved_by, l.approved_at, l.total_days,
-               e.name, e.department_name, dh.name, dh.department_name, h.name
+               l.status, l.approved_by, l.approved_at, l.total_days
     `;
-    const rows = await queryAsync(query, [user_id]);
+    const rows = await queryAsync(query, [employee_id]);
     rows.forEach((row) => {
-      row.recipients = row.recipients ? row.recipients.split(",") : [];
+      row.recipients = row.recipient_names ? row.recipient_names.split(",") : [];
+      delete row.recipient_names;
     });
     res.json(rows);
   } catch (err) {
@@ -215,6 +281,7 @@ const getLeaves = async (req, res) => {
     res.status(500).json({ error: "Database error", details: err.sqlMessage });
   }
 };
+
 const getRecipientOptions = async (req, res) => {
   const { role } = req.user;
   try {
@@ -238,6 +305,26 @@ const getRecipientOptions = async (req, res) => {
   }
 };
 
+const getLeaveBalances = async (req, res) => {
+  const { employee_id } = req.user;
+  console.log("getLeaveBalances - req.user.employee_id:", employee_id); // Debug log
+
+  try {
+    const balances = await queryAsync(
+      "SELECT leave_type, balance FROM leave_balances WHERE employee_id = ?",
+      [employee_id]
+    );
+    const balanceMap = { vacation: 0, sick: 0, casual: 0, maternity: 0 };
+    balances.forEach((b) => {
+      balanceMap[b.leave_type] = b.balance;
+    });
+    res.json(balanceMap);
+  } catch (err) {
+    console.error("DB error:", err);
+    res.status(500).json({ error: "Database error", details: err.sqlMessage });
+  }
+};
+
 module.exports = {
   getLeaves,
   getPendingLeaves,
@@ -245,4 +332,6 @@ module.exports = {
   applyLeave,
   updateLeaveStatus,
   getRecipientOptions,
+  getLeaveBalances,
+  calculateLeaveDays
 };

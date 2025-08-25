@@ -9,11 +9,9 @@ const authenticateToken = (req, res, next) => {
     authHeader && authHeader.startsWith("Bearer")
       ? authHeader.split(" ")[1]
       : null;
-
   if (!token) {
     return res.status(401).json({ error: "Access token is required" });
   }
-
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;

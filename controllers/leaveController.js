@@ -105,7 +105,6 @@ const getPendingLeaves = async (req, res) => {
     res.status(500).json({ error: "Database error", details: err.sqlMessage });
   }
 };
-
 const getAllLeaves = async (req, res) => {
   try {
     const { user_id, role } = req.user;

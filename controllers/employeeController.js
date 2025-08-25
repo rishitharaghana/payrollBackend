@@ -12,7 +12,7 @@ const createEmployee = async (req, res) => {
     mobile,
     emergency_phone,
     address,
-    password = "defaultPass123",
+    password = 'defaultPass123',
     department_name,
     designation_name,
     employment_type,
@@ -20,52 +20,51 @@ const createEmployee = async (req, res) => {
     allowances,
     join_date,
   } = req.body;
-  const role = req.body.role || "hr";
+  const role = req.body.role?.toLowerCase() || 'hr'; // Normalize role to lowercase
 
-  console.log("req.user:", req.user);
-  console.log("Request body:", req.body);
+  console.log('req.user:', req.user);
+  console.log('Request body:', req.body);
 
-  if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  if (!['super_admin', 'hr'].includes(userRole)) {
+    return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
   }
-  if (userRole === "hr" && role === "hr") {
-    return res.status(403).json({ error: "HR cannot create HR accounts" });
+  if (userRole === 'hr' && role === 'hr') {
+    return res.status(403).json({ error: 'HR cannot create HR accounts' });
   }
 
   if (!name?.trim() || !email?.trim() || !mobile?.trim()) {
-    return res.status(400).json({ error: "Name, email, and mobile are required" });
+    return res.status(400).json({ error: 'Name, email, and mobile are required' });
   }
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res.status(400).json({ error: "Invalid email format" });
+    return res.status(400).json({ error: 'Invalid email format' });
   }
 
-  // Validate mobile and emergency_phone are not the same
   if (emergency_phone && emergency_phone.trim() === mobile.trim()) {
-    return res.status(400).json({ error: "Mobile and emergency contact numbers cannot be the same" });
+    return res.status(400).json({ error: 'Mobile and emergency contact numbers cannot be the same' });
   }
 
-  const table = role === "hr" ? "hrs" : role === "dept_head" ? "dept_heads" : "employees";
+  const table = role === 'hr' ? 'hrs' : role === 'dept_head' ? 'dept_heads' : 'employees';
 
-  if (["dept_head", "employee"].includes(role)) {
+  if (['dept_head', 'employee'].includes(role)) {
     if (!department_name || !designation_name) {
-      return res.status(400).json({ error: "Department and designation are required for Department Head or Employee" });
+      return res.status(400).json({ error: 'Department and designation are required for Department Head or Employee' });
     }
     const [designation] = await queryAsync(
-      "SELECT * FROM designations WHERE department_name = ? AND designation_name = ?",
+      'SELECT * FROM designations WHERE department_name = ? AND designation_name = ?',
       [department_name, designation_name]
     );
     if (!designation) {
-      return res.status(400).json({ error: "Invalid department or designation" });
+      return res.status(400).json({ error: 'Invalid department or designation' });
     }
   }
 
-  if (role === "employee") {
+  if (role === 'employee') {
     if (!employment_type || !join_date) {
-      return res.status(400).json({ error: "Employment type and join date are required for Employee" });
+      return res.status(400).json({ error: 'Employment type and join date are required for Employee' });
     }
-    if (!["Full-time", "Part-time", "Internship", "Contract"].includes(employment_type)) {
-      return res.status(400).json({ error: "Invalid employment type" });
+    if (!['Full-time', 'Part-time', 'Internship', 'Contract'].includes(employment_type)) {
+      return res.status(400).json({ error: 'Invalid employment type' });
     }
   }
 
@@ -78,11 +77,13 @@ const createEmployee = async (req, res) => {
         SELECT mobile FROM dept_heads WHERE TRIM(mobile) = ?
         UNION
         SELECT mobile FROM employees WHERE TRIM(mobile) = ?
+        UNION
+        SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ?
       ) AS all_users`,
-      [mobile.trim(), mobile.trim(), mobile.trim()]
+      [mobile.trim(), mobile.trim(), mobile.trim(), mobile.trim()]
     );
     if (existingMobile) {
-      return res.status(400).json({ error: "Mobile number already in use" });
+      return res.status(400).json({ error: 'Mobile number already in use' });
     }
 
     // Check for duplicate email in the target table
@@ -91,25 +92,27 @@ const createEmployee = async (req, res) => {
       [email.trim().toLowerCase()]
     );
     if (existingEmail) {
-      return res.status(400).json({ error: "Email already in use" });
+      return res.status(400).json({ error: 'Email already in use' });
     }
 
-    // Generate employee ID across all tables
+    // Generate employee ID
     let employeeId;
-    const prefix = "MO-EMP-";
+    const prefix = 'MO-EMP-';
     const [lastEmployee] = await queryAsync(
       `SELECT employee_id FROM (
-        SELECT employee_id FROM hrs WHERE employee_id LIKE ? 
-        UNION 
-        SELECT employee_id FROM dept_heads WHERE employee_id LIKE ? 
-        UNION 
+        SELECT employee_id FROM hrs WHERE employee_id LIKE ?
+        UNION
+        SELECT employee_id FROM dept_heads WHERE employee_id LIKE ?
+        UNION
         SELECT employee_id FROM employees WHERE employee_id LIKE ?
+        UNION
+        SELECT employee_id FROM hrms_users WHERE employee_id LIKE ?
       ) AS all_employees ORDER BY CAST(SUBSTRING(employee_id, LENGTH(?) + 1) AS UNSIGNED) DESC LIMIT 1`,
-      [`${prefix}%`, `${prefix}%`, `${prefix}%`, prefix]
+      [`${prefix}%`, `${prefix}%`, `${prefix}%`, `${prefix}%`, prefix]
     );
     if (lastEmployee) {
-      const lastNumber = parseInt(lastEmployee.employee_id.replace(prefix, ""));
-      employeeId = `${prefix}${String(lastNumber + 1).padStart(3, "0")}`;
+      const lastNumber = parseInt(lastEmployee.employee_id.replace(prefix, ''));
+      employeeId = `${prefix}${String(lastNumber + 1).padStart(3, '0')}`;
     } else {
       employeeId = `${prefix}001`;
     }
@@ -117,24 +120,36 @@ const createEmployee = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     let query, values;
-    if (role === "hr") {
-      query = `INSERT INTO hrs (employee_id, name, email, mobile, password)
-               VALUES (?, ?, ?, ?, ?)`;
-      values = [employeeId, name, email, mobile, hashedPassword];
-    } else if (role === "dept_head") {
-      query = `INSERT INTO dept_heads (employee_id, name, email, mobile, password, department_name, designation_name)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`;
-      values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name];
+    if (role === 'hr') {
+      query = `INSERT INTO hrs (employee_id, name, email, mobile, password, is_temporary_password)
+               VALUES (?, ?, ?, ?, ?, ?)`;
+      values = [employeeId, name, email, mobile, hashedPassword, true];
+    } else if (role === 'dept_head') {
+      query = `INSERT INTO dept_heads (employee_id, name, email, mobile, password, department_name, designation_name, is_temporary_password)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+      values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];
     } else {
-      query = `INSERT INTO employees (employee_id, name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, join_date)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      query = `INSERT INTO employees (employee_id, name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [
-        employeeId, name, email, mobile, emergency_phone || null, address || null, hashedPassword,
-        department_name, designation_name, employment_type, basic_salary || 0, allowances || 0, join_date
+        employeeId,
+        name,
+        email,
+        mobile,
+        emergency_phone || null,
+        address || null,
+        hashedPassword,
+        department_name,
+        designation_name,
+        employment_type,
+        basic_salary || 0,
+        allowances || 0,
+        join_date,
+        true,
       ];
     }
 
-    console.log("Executing query:", query, "with values:", values);
+    console.log('Executing query:', query, 'with values:', values);
     const result = await queryAsync(query, values);
     const insertedId = result.insertId;
 
@@ -143,19 +158,22 @@ const createEmployee = async (req, res) => {
       data: {
         id: insertedId,
         employee_id: employeeId,
-        name, email, mobile, role,
-        ...(role === "dept_head" ? { department_name, designation_name } : {}),
-        ...(role === "employee" ? {
-          department_name, designation_name, employment_type, basic_salary, allowances, join_date
-        } : {})
+        name,
+        email,
+        mobile,
+        role,
+        is_temporary_password: true,
+        ...(role === 'dept_head' ? { department_name, designation_name } : {}),
+        ...(role === 'employee'
+          ? { department_name, designation_name, employment_type, basic_salary, allowances, join_date }
+          : {}),
       },
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
+    console.error('DB error:', err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error during creation: ${err.message}` });
   }
 };
-
 const updateEmployee = async (req, res) => {
   const userRole = req.user.role;
   const { id } = req.params;
@@ -204,26 +222,33 @@ const updateEmployee = async (req, res) => {
     res.status(500).json({ error: "Database error during update" });
   }
 };
-
 const fetchEmployees = async (req, res) => {
   try {
     const userRole = req.user.role;
-    if (!["super_admin", "hr"].includes(userRole)) {
-      return res.status(403).json({ error: "Access denied" });
+    if (!['super_admin', 'hr'].includes(userRole)) {
+      return res.status(403).json({ error: 'Access denied' });
     }
 
-    const hr = await queryAsync("SELECT id, employee_id, name, email, mobile, 'hr' as role FROM hrs");
-    const deptHeads = await queryAsync("SELECT id, employee_id, name, email, mobile, department_name, designation_name, 'dept_head' as role FROM dept_heads");
-    const employees = await queryAsync("SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, 'employee' as role FROM employees");
+    const hr = await queryAsync(
+      "SELECT id, employee_id, name, email, mobile, is_temporary_password, 'hr' as role FROM hrs"
+    );
+    const deptHeads = await queryAsync(
+      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, is_temporary_password, 'dept_head' as role FROM dept_heads"
+    );
+    const employees = await queryAsync(
+      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password, 'employee' as role FROM employees"
+    );
+    const superAdmins = await queryAsync(
+      "SELECT id, employee_id, name, email, mobile, is_temporary_password, 'super_admin' as role FROM hrms_users WHERE role = 'super_admin'"
+    );
 
-    const allEmployees = [...hr, ...deptHeads, ...employees];
-    res.json({ message: "Employees fetched successfully", data: allEmployees });
+    const allEmployees = [...superAdmins, ...hr, ...deptHeads, ...employees];
+    res.json({ message: 'Employees fetched successfully', data: allEmployees });
   } catch (err) {
-    console.error("DB error:", err);
-    res.status(500).json({ error: "Database error" });
+    console.error('DB error:', err);
+    res.status(500).json({ error: 'Database error' });
   }
 };
-
 const deleteEmployee = async (req, res) => {
   const userRole = req.user.role;
   const { id } = req.params;
@@ -269,36 +294,38 @@ const deleteEmployee = async (req, res) => {
     res.status(500).json({ error: "Database error during deletion" });
   }
 };
-
 const getCurrentUserProfile = async (req, res) => {
   const userRole = req.user.role;
   const userId = req.user.id;
 
   try {
     let query, table;
-    if (userRole === "hr") {
-      table = "hrs";
-      query = "SELECT id, employee_id, name, email, mobile, 'hr' as role FROM hrs WHERE id = ?";
-    } else if (userRole === "dept_head") {
-      table = "dept_heads";
-      query = "SELECT id, employee_id, name, email, mobile, department_name, designation_name, 'dept_head' as role FROM dept_heads WHERE id = ?";
-    } else if (userRole === "employee") {
-      table = "employees";
-      query = "SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, 'employee' as role FROM employees WHERE id = ?";
+    if (userRole === 'super_admin') {
+      table = 'hrms_users';
+      query = 'SELECT id, employee_id, name, email, mobile, is_temporary_password, role FROM hrms_users WHERE id = ?';
+    } else if (userRole === 'hr') {
+      table = 'hrs';
+      query = 'SELECT id, employee_id, name, email, mobile, is_temporary_password, \'hr\' as role FROM hrs WHERE id = ?';
+    } else if (userRole === 'dept_head') {
+      table = 'dept_heads';
+      query = 'SELECT id, employee_id, name, email, mobile, department_name, designation_name, is_temporary_password, \'dept_head\' as role FROM dept_heads WHERE id = ?';
+    } else if (userRole === 'employee') {
+      table = 'employees';
+      query = 'SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password, \'employee\' as role FROM employees WHERE id = ?';
     } else {
-      return res.status(403).json({ error: "Invalid user role" });
+      return res.status(403).json({ error: 'Invalid user role' });
     }
 
     const [user] = await queryAsync(query, [userId]);
 
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json({ message: "User profile fetched successfully", data: user });
+    res.json({ message: 'User profile fetched successfully', data: user });
   } catch (err) {
-    console.error("DB error:", err);
-    res.status(500).json({ error: "Database error" });
+    console.error('DB error:', err);
+    res.status(500).json({ error: 'Database error' });
   }
 };
 

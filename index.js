@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const app = express();
+const path = require('path');
+
 const authRouter = require("./routes/authRoutes");
 const employeeRouter = require('./routes/employeeRoutes');
 const departmentRouter = require('./routes/departmentRoutes');
@@ -8,14 +10,17 @@ const attendanceRouter = require('./routes/attendanceRoutes');
 const leaveRouter = require('./routes/leaveRoutes');
 const payrollRouter = require('./routes/payrollRoutes');
 const payslipRouter  = require('./routes/payslipRoutes');
+const employeeDetailRouter = require('./routes/employeeDetailsRoutes');
+const travelExpensesRouter = require('./routes/travelExpensesRoutes');
 
 app.use(cors());
 app.use(express.json());
 const allowedOrigins = [
   'http://localhost:3004',
  'https://fe2663e99cb4.ngrok-free.app',
-  
 ];
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -43,7 +48,8 @@ app.use('/api', attendanceRouter);
 app.use('/api', leaveRouter);
 app.use('/api', payrollRouter);
 app.use('/api', payslipRouter);
-
+app.use('/api', employeeDetailRouter);
+app.use('/api', travelExpensesRouter);
 
 const port = 3007;
 app.listen(port, () => {

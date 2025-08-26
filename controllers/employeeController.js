@@ -20,7 +20,7 @@ const createEmployee = async (req, res) => {
     allowances,
     join_date,
   } = req.body;
-  const role = req.body.role?.toLowerCase() || 'hr'; // Normalize role to lowercase
+  const role = req.body.role?.toLowerCase() || 'hr';
 
   console.log('req.user:', req.user);
   console.log('Request body:', req.body);
@@ -69,7 +69,6 @@ const createEmployee = async (req, res) => {
   }
 
   try {
-    // Check for duplicate mobile across all tables
     const [existingMobile] = await queryAsync(
       `SELECT mobile FROM (
         SELECT mobile FROM hrs WHERE TRIM(mobile) = ?
@@ -86,7 +85,6 @@ const createEmployee = async (req, res) => {
       return res.status(400).json({ error: 'Mobile number already in use' });
     }
 
-    // Check for duplicate email in the target table
     const [existingEmail] = await queryAsync(
       `SELECT * FROM ${table} WHERE TRIM(LOWER(email)) = ?`,
       [email.trim().toLowerCase()]
@@ -95,7 +93,6 @@ const createEmployee = async (req, res) => {
       return res.status(400).json({ error: 'Email already in use' });
     }
 
-    // Generate employee ID
     let employeeId;
     const prefix = 'MO-EMP-';
     const [lastEmployee] = await queryAsync(
@@ -174,6 +171,7 @@ const createEmployee = async (req, res) => {
     res.status(500).json({ error: `Database error during creation: ${err.message}` });
   }
 };
+
 const updateEmployee = async (req, res) => {
   const userRole = req.user.role;
   const { id } = req.params;
@@ -222,6 +220,7 @@ const updateEmployee = async (req, res) => {
     res.status(500).json({ error: "Database error during update" });
   }
 };
+
 const fetchEmployees = async (req, res) => {
   try {
     const userRole = req.user.role;
@@ -249,6 +248,7 @@ const fetchEmployees = async (req, res) => {
     res.status(500).json({ error: 'Database error' });
   }
 };
+
 const deleteEmployee = async (req, res) => {
   const userRole = req.user.role;
   const { id } = req.params;
@@ -294,6 +294,7 @@ const deleteEmployee = async (req, res) => {
     res.status(500).json({ error: "Database error during deletion" });
   }
 };
+
 const getCurrentUserProfile = async (req, res) => {
   const userRole = req.user.role;
   const userId = req.user.id;

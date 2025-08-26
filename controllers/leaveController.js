@@ -307,7 +307,6 @@ const getRecipientOptions = async (req, res) => {
 
 const getLeaveBalances = async (req, res) => {
   const { employee_id } = req.user;
-  console.log("getLeaveBalances - req.user.employee_id:", employee_id); // Debug log
 
   try {
     const balances = await queryAsync(

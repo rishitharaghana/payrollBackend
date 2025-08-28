@@ -284,45 +284,50 @@ const updateTravelExpenseStatus = async (req, res) => {
   const { id: travelExpenseId } = req.params;
   const { status, admin_comment } = req.body;
 
-  if (!['super_admin', 'hr'].includes(role)) {
-    return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+  if (!["super_admin", "hr"].includes(role)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
   }
 
-  if (!['Approved', 'Rejected'].includes(status)) {
+  if (!["Approved", "Rejected"].includes(status)) {
     return res.status(400).json({ error: "Invalid status. Must be 'Approved' or 'Rejected'" });
   }
 
   try {
-    const [submission] = await queryAsync('SELECT * FROM travel_expenses WHERE id = ?', [travelExpenseId]);
+    const [submission] = await queryAsync("SELECT * FROM travel_expenses WHERE id = ?", [
+      travelExpenseId,
+    ]);
     if (!submission) {
-      return res.status(404).json({ error: 'Submission not found' });
+      return res.status(404).json({ error: "Submission not found" });
     }
 
-    if (submission.status !== 'Pending') {
-      return res.status(400).json({ error: 'Only pending records can be updated' });
+    if (submission.status !== "Pending") {
+      return res.status(400).json({ error: "Only pending records can be updated" });
     }
 
-    let userTable = role === 'super_admin' ? 'hrms_users' : 'hrs';
-    const [user] = await queryAsync(`SELECT id FROM ${userTable} WHERE id = ?`, [id]);
+   let userTable = role === "super_admin" ? "hrms_users" : "hrs";
+const [user] = await queryAsync(`SELECT employee_id FROM ${userTable} WHERE id = ?`, [id]);
+
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: "User not found" });
     }
 
     await queryAsync(
-      `UPDATE travel_expenses SET status = ?, approved_by = ?, admin_comment = ?, updated_at = NOW() WHERE id = ?`,
-      [status, id, admin_comment || null, travelExpenseId]
-    );
+  `UPDATE travel_expenses 
+   SET status = ?, approved_by = ?, admin_comment = ?, updated_at = NOW() 
+   WHERE id = ?`,
+  [status, user.employee_id, admin_comment || null, travelExpenseId]  
+);
+
 
     res.status(200).json({
       message: `Submission ${status.toLowerCase()} successfully`,
-      data: { id: travelExpenseId, status, admin_comment },
+      data: { id: travelExpenseId, status, admin_comment: admin_comment || null },
     });
   } catch (error) {
-    console.error('Update error:', error);
-    res.status(500).json({ error: 'Failed to update submission' });
+    console.error("Update error:", error);
+    res.status(500).json({ error: "Failed to update submission" });
   }
 };
-
 const downloadReceipt = async (req, res) => {
   const { role, id } = req.user;
 

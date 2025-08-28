@@ -12,6 +12,7 @@ const payrollRouter = require('./routes/payrollRoutes');
 const payslipRouter  = require('./routes/payslipRoutes');
 const employeeDetailRouter = require('./routes/employeeDetailsRoutes');
 const travelExpensesRouter = require('./routes/travelExpensesRoutes');
+const performanceRouter = require('./routes/performanceRoutes')
 
 app.use(cors());
 app.use(express.json());
@@ -50,6 +51,7 @@ app.use('/api', payrollRouter);
 app.use('/api', payslipRouter);
 app.use('/api', employeeDetailRouter);
 app.use('/api', travelExpensesRouter);
+app.use('/api', performanceRouter);
 
 const port = 3007;
 app.listen(port, () => {

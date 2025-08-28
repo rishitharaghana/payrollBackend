@@ -225,20 +225,14 @@ const fetchEmployees = async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    const hr = await queryAsync(
-      "SELECT id, employee_id, name, email, mobile, is_temporary_password, 'hr' as role FROM hrs"
-    );
     const deptHeads = await queryAsync(
-      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, is_temporary_password, 'dept_head' as role FROM dept_heads"
+      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, 'dept_head' as role FROM dept_heads"
     );
     const employees = await queryAsync(
-      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password, 'employee' as role FROM employees"
-    );
-    const superAdmins = await queryAsync(
-      "SELECT id, employee_id, name, email, mobile, is_temporary_password, 'super_admin' as role FROM hrms_users WHERE role = 'super_admin'"
+      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, 'employee' as role FROM employees"
     );
 
-    const allEmployees = [...superAdmins, ...hr, ...deptHeads, ...employees];
+    const allEmployees = [...deptHeads, ...employees];
     res.json({ message: 'Employees fetched successfully', data: allEmployees });
   } catch (err) {
     console.error('DB error:', err);
@@ -326,5 +320,6 @@ const getCurrentUserProfile = async (req, res) => {
     res.status(500).json({ error: 'Database error' });
   }
 };
+
 
 module.exports = { createEmployee, updateEmployee, fetchEmployees, deleteEmployee, getCurrentUserProfile };

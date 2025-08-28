@@ -1,351 +1,380 @@
 const pool = require('../config/db');
 const util = require('util');
-const path = require('path');
-const fs = require('fs').promises;
 const queryAsync = util.promisify(pool.query).bind(pool);
 
-const createTravelExpenses = async (req, res) => {
-  const userRole = req.user.role;
-  const userId = req.user.id;
-  const { travelDate, destination, travelPurpose, expenses, totalAmount } = req.body;
 
-  if (!['super_admin', 'hr', 'dept_head', 'employee'].includes(userRole)) {
-    return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
-  }
+const submitTravelExpense = async (req, res) => {
+  const { employee_id, travel_date, destination, travel_purpose, total_amount, expenses } = req.body;
+  const receipts = req.files || [];
+  const { role, id } = req.user;
 
-  if (!travelDate || !destination?.trim() || !travelPurpose?.trim() || !expenses || !Array.isArray(expenses) || expenses.length === 0) {
-    return res.status(400).json({ error: 'Travel date, destination, travel purpose, and at least one expense are required' });
-  }
-
-  if (!totalAmount || isNaN(totalAmount) || totalAmount <= 0) {
-    return res.status(400).json({ error: 'Valid total amount is required' });
-  }
-
-  for (const exp of expenses) {
-    if (!exp.date || !exp.purpose?.trim() || !exp.amount || isNaN(exp.amount) || exp.amount <= 0 || !exp.category) {
-      return res.status(400).json({ error: 'Each expense must have a valid date, purpose, amount, and category' });
-    }
-    if (!['transport', 'accommodation', 'meals', 'miscellaneous'].includes(exp.category)) {
-      return res.status(400).json({ error: 'Invalid expense category' });
-    }
-  }
-
-  const files = req.files || [];
-  if (files.length > 0) {
-    for (const file of files) {
-      if (file.size > 5 * 1024 * 1024) {
-        return res.status(400).json({ error: 'File size exceeds 5MB limit' });
-      }
-    }
+  if (!employee_id || !travel_date || !destination || !travel_purpose || !total_amount || !expenses) {
+    return res.status(400).json({ error: 'All fields are required' });
   }
 
   try {
-    const table = userRole === 'super_admin' ? 'hrms_users' :
-                  userRole === 'hr' ? 'hrs' :
-                  userRole === 'dept_head' ? 'dept_heads' : 'employees';
-    const [user] = await queryAsync(
-      `SELECT employee_id FROM ${table} WHERE id = ?`,
-      [userId]
-    );
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+    const [employee] = await queryAsync('SELECT employee_id FROM employees WHERE employee_id = ?', [employee_id]);
+    if (!employee) {
+      return res.status(404).json({ error: 'Employee not found' });
     }
-    const employeeId = user.employee_id;
+    const stringEmployeeId = employee.employee_id;
 
-    await queryAsync('START TRANSACTION');
+    let userTable;
+    if (role === 'super_admin') userTable = 'hrms_users';
+    else if (role === 'hr') userTable = 'hrs';
+    else if (role === 'dept_head') userTable = 'dept_heads';
+    else userTable = 'employees';
 
-    const travelExpenseQuery = `
-      INSERT INTO travel_expenses (
-        employee_id, user_role, travel_date, destination, travel_purpose,
-        total_amount, status, submitted_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-    const travelExpenseValues = [
-      employeeId,
-      userRole,
-      travelDate,
-      destination,
-      travelPurpose,
-      totalAmount,
-      'pending',
-      userId,
-    ];
-    const travelExpenseResult = await queryAsync(travelExpenseQuery, travelExpenseValues);
+    const [user] = await queryAsync(`SELECT employee_id FROM ${userTable} WHERE id = ?`, [id]);
+    if (!user || (user.employee_id !== stringEmployeeId && !['super_admin', 'hr'].includes(role))) {
+      return res.status(403).json({ error: 'Unauthorized to submit for this employee' });
+    }
+
+    let parsedExpenses;
+    try {
+      parsedExpenses = JSON.parse(expenses);
+    } catch (error) {
+      return res.status(400).json({ error: 'Invalid expenses format' });
+    }
+    if (!Array.isArray(parsedExpenses) || parsedExpenses.length === 0) {
+      return res.status(400).json({ error: 'Invalid expenses data' });
+    }
+
+    const status = ['hr', 'super_admin'].includes(role) ? 'Approved' : 'Pending';
+    const submitted_to = role === 'employee' ? 'hr' : 'super_admin';
+
+    const travelExpenseResult = await queryAsync(
+      `
+  INSERT INTO travel_expenses 
+  (employee_id, travel_date, destination, travel_purpose, total_amount, status, approved_by, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, 'Pending', NULL, NOW(), NOW())
+`,
+      [stringEmployeeId, travel_date, destination, travel_purpose, total_amount, status, submitted_to, id]
+    );
     const travelExpenseId = travelExpenseResult.insertId;
 
-    for (const exp of expenses) {
-      const expenseItemQuery = `
-        INSERT INTO expense_items (travel_expense_id, expense_date, purpose, amount, category)
-        VALUES (?, ?, ?, ?, ?)
-      `;
-      await queryAsync(expenseItemQuery, [travelExpenseId, exp.date, exp.purpose, exp.amount, exp.category]);
+    for (const exp of parsedExpenses) {
+      if (!exp.expense_date || !exp.purpose || !exp.amount) {
+        return res.status(400).json({ error: 'Invalid expense item data' });
+      }
+      await queryAsync(
+        `INSERT INTO expense_items (travel_expense_id, expense_date, purpose, amount)
+         VALUES (?, ?, ?, ?)`,
+        [travelExpenseId, exp.expense_date, exp.purpose, exp.amount]
+      );
     }
 
-    const fileRecords = [];
-    for (const file of files) {
-      const filePath = path.join('uploads', 'receipts', `${travelExpenseId}_${Date.now()}_${file.originalname}`);
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, file.buffer);
-      const fileQuery = `
-        INSERT INTO expense_receipts (travel_expense_id, file_name, file_url, file_size)
-        VALUES (?, ?, ?, ?)
-      `;
-      await queryAsync(fileQuery, [travelExpenseId, file.originalname, filePath, file.size]);
-      fileRecords.push({ file_name: file.originalname, file_url: filePath, file_size: file.size });
+    for (let i = 0; i < receipts.length; i++) {
+      if (parsedExpenses[i]?.hasReceipt) {
+        const file = receipts[i];
+        await queryAsync(
+          `INSERT INTO expense_receipts (travel_expense_id, file_name, file_path, file_size, uploaded_at)
+           VALUES (?, ?, ?, ?, NOW())`,
+          [travelExpenseId, file.originalname, file.path, file.size]
+        );
+      }
     }
-
-    await queryAsync('COMMIT');
 
     res.status(201).json({
-      message: 'Travel expenses created successfully',
+      message: `Travel expense submitted successfully${status === 'Approved' ? ' and auto-approved' : ''}`,
       data: {
         id: travelExpenseId,
-        employee_id: employeeId,
-        user_role: userRole,
-        travel_date: travelDate,
+        employee_id: stringEmployeeId,
+        travel_date,
         destination,
-        travel_purpose: travelPurpose,
-        total_amount: totalAmount,
-        status: 'pending',
-        submitted_by: userId,
-        expenses,
-        receipts: fileRecords,
+        travel_purpose,
+        total_amount,
+        status,
       },
     });
-  } catch (err) {
-    await queryAsync('ROLLBACK');
-    console.error('DB error:', err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: `Database error during creation: ${err.message}` });
+  } catch (error) {
+    console.error('Submit error:', error);
+    res.status(500).json({ error: 'Failed to submit travel expense' });
   }
 };
 
 const fetchTravelExpenses = async (req, res) => {
-  const userRole = req.user.role;
-  const userId = req.user.id;
-
-  if (!['super_admin', 'hr', 'dept_head', 'employee'].includes(userRole)) {
-    return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
-  }
+  const { role, id } = req.user;
 
   try {
+    let userTable;
+    if (role === 'super_admin') userTable = 'hrms_users';
+    else if (role === 'hr') userTable = 'hrs';
+    else if (role === 'dept_head') userTable = 'dept_heads';
+    else userTable = 'employees';
+
+    const [user] = await queryAsync(`SELECT employee_id FROM ${userTable} WHERE id = ?`, [id]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     let query = `
-      SELECT te.id, te.employee_id, te.user_role, te.travel_date, te.destination,
-             te.travel_purpose, te.total_amount, te.status, te.submitted_by,
-             te.approved_by, te.created_at, te.updated_at
+      SELECT te.*, ei.id AS expense_item_id, ei.expense_date, ei.purpose AS expense_purpose, ei.amount,
+             er.id AS receipt_id, er.file_name, er.file_path, er.file_size,
+             COALESCE(e.name, h.name, d.name, u.name) AS employee_name,
+             COALESCE(e.department_name, d.department_name, h.department_name, u.department) AS department_name
       FROM travel_expenses te
+      LEFT JOIN expense_items ei ON te.id = ei.travel_expense_id
+      LEFT JOIN expense_receipts er ON te.id = er.travel_expense_id
+      LEFT JOIN employees e ON te.employee_id = e.employee_id
+      LEFT JOIN hrs h ON te.employee_id = h.employee_id
+      LEFT JOIN dept_heads d ON te.employee_id = d.employee_id
+      LEFT JOIN hrms_users u ON te.employee_id = u.employee_id
     `;
-    let values = [];
+    let params = [];
 
-    if (userRole === 'employee' || userRole === 'dept_head') {
-      const table = userRole === 'employee' ? 'employees' : 'dept_heads';
-      const [user] = await queryAsync(`SELECT employee_id FROM ${table} WHERE id = ?`, [userId]);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
+    if (role === 'dept_head') {
+      const [deptHead] = await queryAsync('SELECT department_name FROM dept_heads WHERE id = ?', [id]);
+      if (!deptHead) {
+        return res.status(403).json({ error: 'Access denied: Not a department head' });
       }
-      query += ' WHERE te.employee_id = ? AND te.user_role = ?';
-      values.push(user.employee_id, userRole);
+      query += ' WHERE (e.department_name = ? OR d.department_name = ? OR h.department_name = ? OR u.department = ?) AND te.status = ?';
+      params = [deptHead.department_name, deptHead.department_name, deptHead.department_name, deptHead.department_name, 'Pending'];
+    } else if (role === 'employee') {
+      query += ' WHERE te.employee_id = ?';
+      params = [user.employee_id];
+    } else {
+      query += ' WHERE te.status = ?';
+      params = ['Pending'];
     }
 
-    const travelExpenses = await queryAsync(query, values);
+    query += ' ORDER BY te.created_at DESC';
 
-    for (const expense of travelExpenses) {
-      const expenseItems = await queryAsync(
-        'SELECT id, expense_date, purpose, amount, category FROM expense_items WHERE travel_expense_id = ?',
-        [expense.id]
-      );
-      const receipts = await queryAsync(
-        'SELECT id, file_name, file_url, file_size FROM expense_receipts WHERE travel_expense_id = ?',
-        [expense.id]
-      );
-      expense.expenses = expenseItems;
-      expense.receipts = receipts;
-    }
+    const submissions = await queryAsync(query, params);
 
-    res.json({
-      message: 'Travel expenses fetched successfully',
-      data: travelExpenses,
+    const groupedSubmissions = submissions.reduce((acc, row) => {
+      const submission = acc.find(s => s.id === row.id);
+      const expense = {
+        id: row.expense_item_id,
+        expense_date: row.expense_date,
+        purpose: row.expense_purpose,
+        amount: row.amount,
+        receipt: row.receipt_id ? {
+          id: row.receipt_id,
+          file_name: row.file_name,
+          file_path: row.file_path,
+          file_size: row.file_size,
+        } : null,
+      };
+
+      if (submission) {
+        submission.expenses.push(expense);
+      } else {
+        acc.push({
+          id: row.id,
+          employee_id: row.employee_id,
+          employee_name: row.employee_name,
+          department_name: row.department_name,
+          travel_date: row.travel_date,
+          destination: row.destination,
+          travel_purpose: row.travel_purpose,
+          total_amount: row.total_amount,
+          status: row.status,
+          approved_by: row.approved_by,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          expenses: [expense],
+        });
+      }
+      return acc;
+    }, []);
+
+    res.status(200).json({
+      message: 'Travel expense submissions fetched successfully',
+      data: groupedSubmissions,
     });
-  } catch (err) {
-    console.error('DB error:', err);
-    res.status(500).json({ error: 'Database error' });
+  } catch (error) {
+    console.error('Fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch submissions' });
   }
 };
 
-const updateTravelExpenses = async (req, res) => {
-  const userRole = req.user.role;
-  const userId = req.user.id;
-  const { id } = req.params;
-  const { travelDate, destination, travelPurpose, expenses, totalAmount } = req.body;
+const fetchTravelExpenseById = async (req, res) => {
+  const { role, id } = req.user;
 
-  if (!['super_admin', 'hr', 'dept_head', 'employee'].includes(userRole)) {
+  try {
+    let userTable;
+    if (role === 'super_admin') userTable = 'hrms_users';
+    else if (role === 'hr') userTable = 'hrs';
+    else if (role === 'dept_head') userTable = 'dept_heads';
+    else userTable = 'employees';
+
+    const [user] = await queryAsync(`SELECT employee_id FROM ${userTable} WHERE id = ?`, [id]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const [submissions] = await queryAsync(`
+      SELECT te.*, ei.id AS expense_item_id, ei.expense_date, ei.purpose AS expense_purpose, ei.amount,
+             er.id AS receipt_id, er.file_name, er.file_path, er.file_size,
+             COALESCE(e.name, h.name, d.name, u.name) AS employee_name,
+             COALESCE(e.department_name, d.department_name, h.department_name, u.department) AS department_name
+      FROM travel_expenses te
+      LEFT JOIN expense_items ei ON te.id = ei.travel_expense_id
+      LEFT JOIN expense_receipts er ON te.id = er.travel_expense_id
+      LEFT JOIN employees e ON te.employee_id = e.employee_id
+      LEFT JOIN hrs h ON te.employee_id = h.employee_id
+      LEFT JOIN dept_heads d ON te.employee_id = d.employee_id
+      LEFT JOIN hrms_users u ON te.employee_id = u.employee_id
+      WHERE te.id = ?
+    `, [req.params.id]);
+
+    if (submissions.length === 0) {
+      return res.status(404).json({ error: 'Submission not found' });
+    }
+
+    if (role === 'employee' && submissions[0].employee_id !== user.employee_id) {
+      return res.status(403).json({ error: 'Unauthorized access' });
+    }
+    if (role === 'dept_head') {
+      const [deptHead] = await queryAsync('SELECT department_name FROM dept_heads WHERE id = ?', [id]);
+      if (!deptHead || submissions[0].department_name !== deptHead.department_name) {
+        return res.status(403).json({ error: 'Unauthorized access' });
+      }
+    }
+
+    const submission = submissions.reduce((acc, row) => {
+      const expense = {
+        id: row.expense_item_id,
+        expense_date: row.expense_date,
+        purpose: row.expense_purpose,
+        amount: row.amount,
+        receipt: row.receipt_id ? {
+          id: row.receipt_id,
+          file_name: row.file_name,
+          file_path: row.file_path,
+          file_size: row.file_size,
+        } : null,
+      };
+
+      if (!acc.id) {
+        acc = {
+          id: row.id,
+          employee_id: row.employee_id,
+          employee_name: row.employee_name,
+          department_name: row.department_name,
+          travel_date: row.travel_date,
+          destination: row.destination,
+          travel_purpose: row.travel_purpose,
+          total_amount: row.total_amount,
+          status: row.status,
+          approved_by: row.approved_by,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          expenses: [expense],
+        };
+      } else {
+        acc.expenses.push(expense);
+      }
+      return acc;
+    }, {});
+
+    res.status(200).json({
+      message: 'Travel expense submission fetched successfully',
+      data: submission,
+    });
+  } catch (error) {
+    console.error('Fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch submission' });
+  }
+};
+
+const updateTravelExpenseStatus = async (req, res) => {
+  const { role, id } = req.user;
+  const { id: travelExpenseId } = req.params;
+  const { status, admin_comment } = req.body;
+
+  if (!['super_admin', 'hr'].includes(role)) {
     return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
   }
 
-  if (!travelDate || !destination?.trim() || !travelPurpose?.trim() || !expenses || !Array.isArray(expenses) || expenses.length === 0) {
-    return res.status(400).json({ error: 'Travel date, destination, travel purpose, and at least one expense are required' });
-  }
-
-  if (!totalAmount || isNaN(totalAmount) || totalAmount <= 0) {
-    return res.status(400).json({ error: 'Valid total amount is required' });
-  }
-
-  for (const exp of expenses) {
-    if (!exp.date || !exp.purpose?.trim() || !exp.amount || isNaN(exp.amount) || exp.amount <= 0 || !exp.category) {
-      return res.status(400).json({ error: 'Each expense must have a valid date, purpose, amount, and category' });
-    }
-    if (!['transport', 'accommodation', 'meals', 'miscellaneous'].includes(exp.category)) {
-      return res.status(400).json({ error: 'Invalid expense category' });
-    }
+  if (!['Approved', 'Rejected'].includes(status)) {
+    return res.status(400).json({ error: "Invalid status. Must be 'Approved' or 'Rejected'" });
   }
 
   try {
-    if (userRole === 'employee' || userRole === 'dept_head') {
-      const table = userRole === 'employee' ? 'employees' : 'dept_heads';
-      const [user] = await queryAsync(`SELECT employee_id FROM ${table} WHERE id = ?`, [userId]);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      const [expense] = await queryAsync('SELECT employee_id, user_role FROM travel_expenses WHERE id = ?', [id]);
-      if (!expense || expense.employee_id !== user.employee_id || expense.user_role !== userRole) {
-        return res.status(403).json({ error: 'Access denied: Cannot update another user’s expenses' });
-      }
+    const [submission] = await queryAsync('SELECT * FROM travel_expenses WHERE id = ?', [travelExpenseId]);
+    if (!submission) {
+      return res.status(404).json({ error: 'Submission not found' });
     }
 
-    await queryAsync('START TRANSACTION');
-
-    const updateQuery = `
-      UPDATE travel_expenses SET
-        travel_date = ?, destination = ?, travel_purpose = ?, total_amount = ?
-      WHERE id = ?
-    `;
-    const updateValues = [travelDate, destination, travelPurpose, totalAmount, id];
-    const updateResult = await queryAsync(updateQuery, updateValues);
-    if (updateResult.affectedRows === 0) {
-      await queryAsync('ROLLBACK');
-      return res.status(404).json({ error: 'Travel expense record not found' });
+    if (submission.status !== 'Pending') {
+      return res.status(400).json({ error: 'Only pending records can be updated' });
     }
 
-    await queryAsync('DELETE FROM expense_items WHERE travel_expense_id = ?', [id]);
-
-    for (const exp of expenses) {
-      const expenseItemQuery = `
-        INSERT INTO expense_items (travel_expense_id, expense_date, purpose, amount, category)
-        VALUES (?, ?, ?, ?, ?)
-      `;
-      await queryAsync(expenseItemQuery, [id, exp.date, exp.purpose, exp.amount, exp.category]);
+    let userTable = role === 'super_admin' ? 'hrms_users' : 'hrs';
+    const [user] = await queryAsync(`SELECT id FROM ${userTable} WHERE id = ?`, [id]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    const files = req.files || [];
-    if (files.length > 0) {
-      for (const file of files) {
-        if (file.size > 5 * 1024 * 1024) {
-          await queryAsync('ROLLBACK');
-          return res.status(400).json({ error: 'File size exceeds 5MB limit' });
-        }
-        const filePath = path.join('uploads', 'receipts', `${id}_${Date.now()}_${file.originalname}`);
-        await fs.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.writeFile(filePath, file.buffer);
-        const fileQuery = `
-          INSERT INTO expense_receipts (travel_expense_id, file_name, file_url, file_size)
-          VALUES (?, ?, ?, ?)
-        `;
-        await queryAsync(fileQuery, [id, file.originalname, filePath, file.size]);
-      }
-    }
-    await queryAsync('COMMIT');
+    await queryAsync(
+      `UPDATE travel_expenses SET status = ?, approved_by = ?, admin_comment = ?, updated_at = NOW() WHERE id = ?`,
+      [status, id, admin_comment || null, travelExpenseId]
+    );
 
-    res.json({
-      message: 'Travel expenses updated successfully',
-      data: {
-        id,
-        travel_date: travelDate,
-        destination,
-        travel_purpose: travelPurpose,
-        total_amount: totalAmount,
-        expenses,
-      },
+    res.status(200).json({
+      message: `Submission ${status.toLowerCase()} successfully`,
+      data: { id: travelExpenseId, status, admin_comment },
     });
-  } catch (err) {
-    await queryAsync('ROLLBACK');
-    console.error('DB error:', err);
-    res.status(500).json({ error: 'Database error during update' });
+  } catch (error) {
+    console.error('Update error:', error);
+    res.status(500).json({ error: 'Failed to update submission' });
   }
 };
 
-const deleteTravelExpenses = async (req, res) => {
-  const userRole = req.user.role;
-  const userId = req.user.id;
-  const { id } = req.params;
-
-  if (!['super_admin', 'hr', 'dept_head', 'employee'].includes(userRole)) {
-    return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
-  }
+const downloadReceipt = async (req, res) => {
+  const { role, id } = req.user;
 
   try {
-    if (userRole === 'employee' || userRole === 'dept_head') {
-      const table = userRole === 'employee' ? 'employees' : 'dept_heads';
-      const [user] = await queryAsync(`SELECT employee_id FROM ${table} WHERE id = ?`, [userId]);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
+    let userTable;
+    if (role === 'super_admin') userTable = 'hrms_users';
+    else if (role === 'hr') userTable = 'hrs';
+    else if (role === 'dept_head') userTable = 'dept_heads';
+    else userTable = 'employees';
+
+    const [user] = await queryAsync(`SELECT employee_id FROM ${userTable} WHERE id = ?`, [id]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const [receipt] = await queryAsync(
+      `SELECT er.*, te.employee_id, COALESCE(e.department_name, d.department_name, h.department_name, u.department) AS department_name
+       FROM expense_receipts er
+       LEFT JOIN travel_expenses te ON er.travel_expense_id = te.id
+       LEFT JOIN employees e ON te.employee_id = e.employee_id
+       LEFT JOIN hrs h ON te.employee_id = h.employee_id
+       LEFT JOIN dept_heads d ON te.employee_id = d.employee_id
+       LEFT JOIN hrms_users u ON te.employee_id = u.employee_id
+       WHERE er.id = ?`,
+      [req.params.id]
+    );
+
+    if (!receipt) {
+      return res.status(404).json({ error: 'Receipt not found' });
+    }
+
+    if (role === 'employee' && receipt.employee_id !== user.employee_id) {
+      return res.status(403).json({ error: 'Unauthorized access' });
+    }
+    if (role === 'dept_head') {
+      const [deptHead] = await queryAsync('SELECT department_name FROM dept_heads WHERE id = ?', [id]);
+      if (!deptHead || receipt.department_name !== deptHead.department_name) {
+        return res.status(403).json({ error: 'Unauthorized access' });
       }
-      const [expense] = await queryAsync('SELECT employee_id, user_role FROM travel_expenses WHERE id = ?', [id]);
-      if (!expense || expense.employee_id !== user.employee_id || expense.user_role !== userRole) {
-        return res.status(403).json({ error: 'Access denied: Cannot delete another user’s expenses' });
-      }
     }
 
-    const deleteQuery = 'DELETE FROM travel_expenses WHERE id = ?';
-    const deleteResult = await queryAsync(deleteQuery, [id]);
-    if (deleteResult.affectedRows === 0) {
-      return res.status(404).json({ error: 'Travel expense record not found' });
-    }
-
-    res.json({ message: 'Travel expenses deleted successfully', id });
-  } catch (err) {
-    console.error('DB error:', err);
-    res.status(500).json({ error: 'Database error during deletion' });
-  }
-};
-
-const approveTravelExpenses = async (req, res) => {
-  const userRole = req.user.role;
-  const userId = req.user.id;
-  const { id } = req.params;
-  const { status } = req.body;
-
-  if (!['super_admin', 'hr'].includes(userRole)) {
-    return res.status(403).json({ error: 'Access denied: Only super_admin or hr can approve expenses' });
-  }
-
-  if (!['approved', 'rejected'].includes(status)) {
-    return res.status(400).json({ error: 'Status must be "approved" or "rejected"' });
-  }
-
-  try {
-    const updateQuery = `
-      UPDATE travel_expenses SET
-        status = ?, approved_by = ?
-      WHERE id = ?
-    `;
-    const updateResult = await queryAsync(updateQuery, [status, userId, id]);
-    if (updateResult.affectedRows === 0) {
-      return res.status(404).json({ error: 'Travel expense record not found' });
-    }
-
-    res.json({
-      message: `Travel expenses ${status} successfully`,
-      data: { id, status, approved_by: userId },
-    });
-  } catch (err) {
-    console.error('DB error:', err);
-    res.status(500).json({ error: 'Database error during approval' });
+    res.download(receipt.file_path, receipt.file_name);
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ error: 'Failed to download receipt' });
   }
 };
 
 module.exports = {
-  createTravelExpenses,
+  submitTravelExpense,
   fetchTravelExpenses,
-  updateTravelExpenses,
-  deleteTravelExpenses,
-  approveTravelExpenses,
+  fetchTravelExpenseById,
+  updateTravelExpenseStatus,
+  downloadReceipt,
 };

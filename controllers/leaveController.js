@@ -113,7 +113,6 @@ const applyLeave = async (req, res) => {
 
 const getPendingLeaves = async (req, res) => {
   const { employee_id } = req.user;
-  console.log("getPendingLeaves - req.user.employee_id:", employee_id); // Debug log
 
   try {
     const query = `
@@ -147,7 +146,6 @@ const getPendingLeaves = async (req, res) => {
 
 const getAllLeaves = async (req, res) => {
   const { employee_id, role } = req.user;
-  console.log("getAllLeaves - req.user.employee_id:", employee_id); // Debug log
 
   try {
     let query = `

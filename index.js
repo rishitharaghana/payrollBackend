@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 const path = require('path');
-
+const upload = require('./middleware/upload');
 const authRouter = require("./routes/authRoutes");
 const employeeRouter = require('./routes/employeeRoutes');
 const departmentRouter = require('./routes/departmentRoutes');

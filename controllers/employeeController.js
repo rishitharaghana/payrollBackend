@@ -22,8 +22,6 @@ const createEmployee = async (req, res) => {
   } = req.body;
   const role = req.body.role?.toLowerCase() || 'hr';
 
-  console.log('req.user:', req.user);
-  console.log('Request body:', req.body);
 
   if (!['super_admin', 'hr'].includes(userRole)) {
     return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
@@ -146,7 +144,6 @@ const createEmployee = async (req, res) => {
       ];
     }
 
-    console.log('Executing query:', query, 'with values:', values);
     const result = await queryAsync(query, values);
     const insertedId = result.insertId;
 

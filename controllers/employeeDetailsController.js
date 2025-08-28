@@ -24,8 +24,6 @@ const createPersonalDetails = async (req, res) => {
     contract_end_date,
   } = req.body;
 
-  console.log('Request user:', { userId, userRole });
-  console.log('Request body:', req.body);
 
   // Convert employee_id to string
   const employeeIdStr = String(employee_id);

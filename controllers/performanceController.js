@@ -2,18 +2,81 @@ const pool = require("../config/db");
 const util = require("util");
 const queryAsync = util.promisify(pool.query).bind(pool);
 
+const setEmployeeGoal = async (req, res) => {
+  const userRole = req.user.role;
+  const { employee_id, title, description, due_date, tasks } = req.body;
+
+  if (!["super_admin", "hr"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Only HR or Admin can set goals" });
+  }
+
+  if (!employee_id || !title || !due_date) {
+    return res.status(400).json({ error: "Employee ID, title, and due date are required" });
+  }
+
+  try {
+    const [employee] = await queryAsync("SELECT employee_id FROM hrms_users WHERE employee_id = ?", [employee_id]);
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    const goalQuery = `
+      INSERT INTO goals (employee_id, title, description, due_date, created_by)
+      VALUES (?, ?, ?, ?, ?)
+    `;
+    const goalValues = [employee_id, title, description || null, due_date, req.user.employee_id];
+    const goalResult = await queryAsync(goalQuery, goalValues);
+    const goalId = goalResult.insertId;
+
+    let insertedTasks = [];
+    if (tasks && Array.isArray(tasks)) {
+      for (const task of tasks) {
+        const taskQuery = `
+          INSERT INTO tasks (goal_id, employee_id, title, description, due_date, priority)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `;
+        const taskValues = [goalId, employee_id, task.title, task.description || null, task.due_date, task.priority || "Medium"];
+        const taskResult = await queryAsync(taskQuery, taskValues);
+        insertedTasks.push({ id: taskResult.insertId, ...task });
+      }
+    }
+
+    res.status(201).json({
+      message: "Goal and tasks set successfully",
+      data: { id: goalId, employee_id, title, description, due_date, tasks: insertedTasks },
+    });
+  } catch (err) {
+    console.error("DB error:", err);
+    res.status(500).json({ error: "Database error during goal setting" });
+  }
+};
+
 const fetchEmployeePerformance = async (req, res) => {
   const { employee_id } = req.params;
   const userRole = req.user.role;
   const userEmployeeId = req.user.employee_id;
+
+  if (!employee_id) {
+    return res.status(400).json({ error: "Employee ID is required" });
+  }
 
   if (!["super_admin", "hr", "dept_head", "employee"].includes(userRole) || (userRole === "employee" && userEmployeeId !== employee_id)) {
     return res.status(403).json({ error: "Access denied" });
   }
 
   try {
+    const [employee] = await queryAsync("SELECT employee_id FROM hrms_users WHERE employee_id = ?", [employee_id]);
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
     const goals = await queryAsync(
       "SELECT id, title, description, due_date, progress, status FROM goals WHERE employee_id = ?",
+      [employee_id]
+    );
+
+    const tasks = await queryAsync(
+      "SELECT id, goal_id, title, description, due_date, priority, progress, status FROM tasks WHERE employee_id = ?",
       [employee_id]
     );
 
@@ -39,17 +102,11 @@ const fetchEmployeePerformance = async (req, res) => {
 
     res.json({
       message: "Performance data fetched successfully",
-      data: {
-        goals,
-        competencies,
-        achievements,
-        feedback,
-        learningGrowth,
-      },
+      data: { goals, tasks, competencies, achievements, feedback, learningGrowth },
     });
   } catch (err) {
     console.error("DB error:", err);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
@@ -59,6 +116,10 @@ const submitSelfReview = async (req, res) => {
 
   if (userEmployeeId !== employee_id) {
     return res.status(403).json({ error: "Access denied: Can only submit self-review for yourself" });
+  }
+
+  if (!comments?.trim()) {
+    return res.status(400).json({ error: "Comments are required" });
   }
 
   try {
@@ -73,57 +134,51 @@ const submitSelfReview = async (req, res) => {
   }
 };
 
-const setEmployeeGoal = async (req, res) => {
+const conductAppraisal = async (req, res) => {
   const userRole = req.user.role;
-  const { employee_id, title, description, due_date } = req.body;
+  const { employee_id, performance_score, manager_comments, achievements, competencies, bonus_eligible, promotion_recommended, salary_hike_percentage } = req.body;
 
   if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied: Only HR or Admin can set goals" });
-  }
-
-  if (!employee_id || !title || !due_date) {
-    return res.status(400).json({ error: "Employee ID, title, and due date are required" });
+    return res.status(403).json({ error: "Access denied: Only HR or Admin can conduct appraisals" });
   }
 
   try {
-    const [employee] = await queryAsync(
-      "SELECT employee_id FROM hrms_users WHERE employee_id = ?",
-      [employee_id]
-    );
+    const [employee] = await queryAsync("SELECT employee_id FROM hrms_users WHERE employee_id = ?", [employee_id]);
     if (!employee) {
-      return res.status(404).json({ error: "Employee not found in the system" });
+      return res.status(404).json({ error: "Employee not found" });
     }
 
-    const query = `
-      INSERT INTO goals (employee_id, title, description, due_date, created_by)
-      VALUES (?, ?, ?, ?, ?)
-    `;
-    const values = [
-      employee_id,
-      title,
-      description || null,
-      due_date,
-      req.user.employee_id || null,
-    ];
-    const result = await queryAsync(query, values);
+    if (manager_comments) {
+      await queryAsync(
+        "INSERT INTO feedback (employee_id, source, comment, timestamp) VALUES (?, ?, ?, NOW())",
+        [employee_id, "Manager", manager_comments]
+      );
+    }
 
-    res.status(201).json({
-      message: "Goal set successfully",
-      data: {
-        id: result.insertId,
-        employee_id,
-        title,
-        description,
-        due_date,
-        created_by: req.user.employee_id,
-      },
-    });
+    if (competencies && Array.isArray(competencies)) {
+      for (const comp of competencies) {
+        await queryAsync(
+          "INSERT INTO competencies (employee_id, skill, manager_rating, feedback) VALUES (?, ?, ?, ?)",
+          [employee_id, comp.skill, comp.manager_rating, comp.feedback]
+        );
+      }
+    }
+
+    if (achievements && Array.isArray(achievements)) {
+      for (const ach of achievements) {
+        await queryAsync(
+          "INSERT INTO achievements (employee_id, title, date, type) VALUES (?, ?, ?, ?)",
+          [employee_id, ach.title, ach.date, ach.type]
+        );
+      }
+    }
+
+    res.status(201).json({ message: "Appraisal conducted successfully" });
   } catch (err) {
     console.error("DB error:", err);
-    res.status(500).json({ error: "Database error during goal setting" });
+    res.status(500).json({ error: "Database error during appraisal" });
   }
 };
-
 
 const updateGoalProgress = async (req, res) => {
   const userRole = req.user.role;
@@ -160,79 +215,6 @@ const updateGoalProgress = async (req, res) => {
     res.status(500).json({ error: "Database error during goal update" });
   }
 };
-
-const conductAppraisal = async (req, res) => {
-  const userRole = req.user.role;
-  const { employee_id, performance_score, manager_comments, achievements, bonus_eligible, promotion_recommended, salary_hike_percentage } = req.body;
-
-  if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied: Only HR or Admin can conduct appraisals" });
-  }
-
-  if (!employee_id || !performance_score || !manager_comments || !achievements) {
-    return res.status(400).json({ error: "Employee ID, performance score, manager comments, and achievements are required" });
-  }
-
-  try {
-    // Verify employee exists
-    const [employee] = await queryAsync(
-      `SELECT employee_id FROM (
-        SELECT employee_id FROM employees WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM dept_heads WHERE employee_id = ?
-      ) AS all_employees`,
-      [employee_id, employee_id]
-    );
-    if (!employee) {
-      return res.status(404).json({ error: "Employee not found" });
-    }
-
-    // Check if goals exist and are due for appraisal
-    const [goals] = await queryAsync(
-      "SELECT COUNT(*) as count FROM goals WHERE employee_id = ? AND due_date <= CURDATE()",
-      [employee_id]
-    );
-    if (goals.count === 0) {
-      return res.status(400).json({ error: "No goals due for appraisal for this employee" });
-    }
-
-    const query = `
-      INSERT INTO performance_reviews (employee_id, review_date, reviewer_id, performance_score, manager_comments, achievements, bonus_eligible, promotion_recommended, salary_hike_percentage)
-      VALUES (?, CURDATE(), ?, ?, ?, ?, ?, ?, ?)
-    `;
-    const values = [
-      employee_id,
-      req.user.employee_id,
-      Math.max(0, Math.min(100, performance_score)),
-      manager_comments,
-      JSON.stringify(achievements),
-      !!bonus_eligible,
-      !!promotion_recommended,
-      salary_hike_percentage || 0,
-    ];
-    const result = await queryAsync(query, values);
-
-    res.status(201).json({
-      message: "Appraisal conducted successfully",
-      data: {
-        id: result.insertId,
-        employee_id,
-        review_date: new Date().toISOString().split("T")[0],
-        reviewer_id: req.user.employee_id,
-        performance_score,
-        manager_comments,
-        achievements,
-        bonus_eligible,
-        promotion_recommended,
-        salary_hike_percentage,
-      },
-    });
-  } catch (err) {
-    console.error("DB error:", err);
-    res.status(500).json({ error: "Database error during appraisal" });
-  }
-};
-
 
 
 module.exports = { setEmployeeGoal, updateGoalProgress, conductAppraisal, fetchEmployeePerformance, submitSelfReview };

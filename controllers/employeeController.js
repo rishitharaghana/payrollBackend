@@ -42,7 +42,7 @@ const createEmployee = async (req, res) => {
     return res.status(400).json({ error: 'Mobile and emergency contact numbers cannot be the same' });
   }
 
-  const table = role === 'hr' ? 'hrs' : role === 'dept_head' ? 'dept_heads' : 'employees';
+  const table = role === 'hr' ? 'hrs' : role === 'dept_head'  ? 'dept_heads'  : role === 'manager'? 'managers': 'employees';
 
   if (['dept_head', 'employee'].includes(role)) {
     if (!department_name || !designation_name) {
@@ -75,9 +75,13 @@ const createEmployee = async (req, res) => {
         UNION
         SELECT mobile FROM employees WHERE TRIM(mobile) = ?
         UNION
+        
+        SELECT mobile FROM managers WHERE TRIM(mobile) = ?
+         UNION
         SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ?
+       
       ) AS all_users`,
-      [mobile.trim(), mobile.trim(), mobile.trim(), mobile.trim()]
+      [mobile.trim(), mobile.trim(), mobile.trim(), mobile.trim(), mobile.trim()]
     );
     if (existingMobile) {
       return res.status(400).json({ error: 'Mobile number already in use' });
@@ -101,9 +105,11 @@ const createEmployee = async (req, res) => {
         UNION
         SELECT employee_id FROM employees WHERE employee_id LIKE ?
         UNION
-        SELECT employee_id FROM hrms_users WHERE employee_id LIKE ?
+        SELECT employee_id FROM managers WHERE employee_id LIKE ?
+        UNION
+        SELECT employee_id FROM hrms_users WHERE employee_id LIKE?
       ) AS all_employees ORDER BY CAST(SUBSTRING(employee_id, LENGTH(?) + 1) AS UNSIGNED) DESC LIMIT 1`,
-      [`${prefix}%`, `${prefix}%`, `${prefix}%`, `${prefix}%`, prefix]
+      [`${prefix}%`, `${prefix}%`, `${prefix}%`, `${prefix}%`, `${prefix}%`, prefix]
     );
     if (lastEmployee) {
       const lastNumber = parseInt(lastEmployee.employee_id.replace(prefix, ''));
@@ -123,7 +129,11 @@ const createEmployee = async (req, res) => {
       query = `INSERT INTO dept_heads (employee_id, name, email, mobile, password, department_name, designation_name, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];
-    } else {
+    } else if(role === 'managers'){
+      query = `INSERT INTO managers (employee_id, name, email, mobile, password, department_name, designation_name, is_temporary_password)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+      values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];         
+    }else {
       query = `INSERT INTO employees (employee_id, name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [
@@ -189,7 +199,13 @@ const updateEmployee = async (req, res) => {
     return res.status(400).json({ error: "Invalid email format" });
   }
 
-  const table = role === "hr" ? "hrs" : role === "dept_head" ? "dept_heads" : "employees";
+const table = role === "hr"
+  ? "hrs"
+  : role === "dept_head"
+  ? "dept_heads"
+  : role === "manager"
+  ? "managers"
+  : "employees";
 
   try {
     const emailCheck = await queryAsync(
@@ -228,11 +244,14 @@ const fetchEmployees = async (req, res) => {
     const deptHeads = await queryAsync(
       "SELECT id, employee_id, name, email, mobile, department_name, designation_name, 'dept_head' as role FROM dept_heads"
     );
+    const managers = await queryAsync(
+      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, 'manager' as role FROM managers"
+    );
     const employees = await queryAsync(
       "SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, 'employee' as role FROM employees"
     );
 
-    const allEmployees = [...deptHeads, ...employees];
+    const allEmployees = [...deptHeads, ...managers, ...employees];
     res.json({ message: 'Employees fetched successfully', data: allEmployees });
   } catch (err) {
     console.error('DB error:', err);
@@ -256,7 +275,13 @@ const deleteEmployee = async (req, res) => {
     return res.status(400).json({ error: "Role is required for deletion" });
   }
 
-  const table = role === "hr" ? "hrs" : role === "dept_head" ? "dept_heads" : "employees";
+const table = role === "hr"
+  ? "hrs"
+  : role === "dept_head"
+  ? "dept_heads"
+  : role === "manager"
+  ? "managers"
+  : "employees";
 
   if (role === "employee") {
     try {
@@ -301,7 +326,10 @@ const getCurrentUserProfile = async (req, res) => {
     } else if (userRole === 'dept_head') {
       table = 'dept_heads';
       query = 'SELECT id, employee_id, name, email, mobile, department_name, designation_name, is_temporary_password, \'dept_head\' as role FROM dept_heads WHERE id = ?';
-    } else if (userRole === 'employee') {
+    } else if(userRole === 'manager'){
+      table = 'managers';
+      query = 'SELECT id, employee_id, name, email, mobile, department_name, designation_name, is_temporary_password, \'manager\' as role FROM managers WHERE id = ?';
+    }else if (userRole === 'employee') {
       table = 'employees';
       query = 'SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password, \'employee\' as role FROM employees WHERE id = ?';
     } else {
@@ -320,6 +348,7 @@ const getCurrentUserProfile = async (req, res) => {
     res.status(500).json({ error: 'Database error' });
   }
 };
+
 
 
 module.exports = { createEmployee, updateEmployee, fetchEmployees, deleteEmployee, getCurrentUserProfile };

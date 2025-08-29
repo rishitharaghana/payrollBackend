@@ -125,7 +125,7 @@ const fetchAllAttendance = async (req, res) => {
     let query = `
       SELECT a.id, a.employee_id, DATE_FORMAT(a.date, '%Y-%m-%d') AS date, a.login_time, a.logout_time, a.recipient, a.location, a.status, a.created_at,
              COALESCE(e.name, h.name, d.name, u.name) AS employee_name,
-             COALESCE(e.department_name, d.department_name, h.department_name, u.department) AS department_name
+             COALESCE(e.department_name, d.department_name, h.department_name, u.department_name) AS department_name
       FROM attendance a
       LEFT JOIN employees e ON a.employee_id = e.employee_id
       LEFT JOIN hrs h ON a.employee_id = h.employee_id

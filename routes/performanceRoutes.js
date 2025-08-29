@@ -9,4 +9,4 @@ router.put('/employee-performance/goals/:goal_id', authenticateToken, updateGoal
 router.post('/employee/appraisals', authenticateToken, conductAppraisal);
 router.post('/employee/self-review', authenticateToken, submitSelfReview);
 
-module.exports = router;
+module.exports = router;    

@@ -10,7 +10,6 @@ const attendanceRouter = require('./routes/attendanceRoutes');
 const leaveRouter = require('./routes/leaveRoutes');
 const payrollRouter = require('./routes/payrollRoutes');
 const payslipRouter  = require('./routes/payslipRoutes');
-const employeeDetailRouter = require('./routes/employeeDetailsRoutes');
 const travelExpensesRouter = require('./routes/travelExpensesRoutes');
 const performanceRouter = require('./routes/performanceRoutes')
 
@@ -49,7 +48,6 @@ app.use('/api', attendanceRouter);
 app.use('/api', leaveRouter);
 app.use('/api', payrollRouter);
 app.use('/api', payslipRouter);
-app.use('/api', employeeDetailRouter);
 app.use('/api', travelExpensesRouter);
 app.use('/api', performanceRouter);
 

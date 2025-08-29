@@ -7,14 +7,20 @@ const {
   updateEmployee,
   deleteEmployee,
   getCurrentUserProfile,
-  fetchReviewers,
+  createEmployeePersonalDetails,
+  createDocuments,
+  createEducationDetails,
+  createBankDetails,
 } = require("../controllers/employeeController");
 
 router.post("/employees", authenticateToken, createEmployee);
+router.post('/employees/personal-details', authenticateToken, createEmployeePersonalDetails);
+router.post('/employees/education-details', authenticateToken, createEducationDetails);
+router.post('/employees/document', authenticateToken, createDocuments)
+router.post('/employees/bank-details', authenticateToken, createBankDetails);
 router.get("/employees", authenticateToken, fetchEmployees);
 router.put("/employees/:id", authenticateToken, updateEmployee);
 router.delete("/employees/:id", authenticateToken, deleteEmployee);
 router.get("/profile", authenticateToken, getCurrentUserProfile);
-// router.get('/employees/reviewer', authenticateToken, fetchReviewers);
 
 module.exports = router;

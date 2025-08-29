@@ -22,7 +22,6 @@ const createEmployee = async (req, res) => {
   } = req.body;
   const role = req.body.role?.toLowerCase() || 'hr';
 
-
   if (!['super_admin', 'hr'].includes(userRole)) {
     return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
   }
@@ -42,11 +41,11 @@ const createEmployee = async (req, res) => {
     return res.status(400).json({ error: 'Mobile and emergency contact numbers cannot be the same' });
   }
 
-  const table = role === 'hr' ? 'hrs' : role === 'dept_head'  ? 'dept_heads'  : role === 'manager'? 'managers': 'employees';
+  const table = role === 'hr' ? 'hrs' : role === 'dept_head' ? 'dept_heads' : role === 'manager' ? 'managers' : 'employees';
 
-  if (['dept_head', 'employee'].includes(role)) {
+  if (['dept_head', 'employee', 'manager'].includes(role)) {
     if (!department_name || !designation_name) {
-      return res.status(400).json({ error: 'Department and designation are required for Department Head or Employee' });
+      return res.status(400).json({ error: 'Department and designation are required for Department Head, Manager, or Employee' });
     }
     const [designation] = await queryAsync(
       'SELECT * FROM designations WHERE department_name = ? AND designation_name = ?',
@@ -57,9 +56,9 @@ const createEmployee = async (req, res) => {
     }
   }
 
-  if (role === 'employee') {
+  if (['employee', 'manager'].includes(role)) {
     if (!employment_type || !join_date) {
-      return res.status(400).json({ error: 'Employment type and join date are required for Employee' });
+      return res.status(400).json({ error: 'Employment type and join date are required for Employee or Manager' });
     }
     if (!['Full-time', 'Part-time', 'Internship', 'Contract'].includes(employment_type)) {
       return res.status(400).json({ error: 'Invalid employment type' });
@@ -75,11 +74,9 @@ const createEmployee = async (req, res) => {
         UNION
         SELECT mobile FROM employees WHERE TRIM(mobile) = ?
         UNION
-        
         SELECT mobile FROM managers WHERE TRIM(mobile) = ?
-         UNION
+        UNION
         SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ?
-       
       ) AS all_users`,
       [mobile.trim(), mobile.trim(), mobile.trim(), mobile.trim(), mobile.trim()]
     );
@@ -107,7 +104,7 @@ const createEmployee = async (req, res) => {
         UNION
         SELECT employee_id FROM managers WHERE employee_id LIKE ?
         UNION
-        SELECT employee_id FROM hrms_users WHERE employee_id LIKE?
+        SELECT employee_id FROM hrms_users WHERE employee_id LIKE ?
       ) AS all_employees ORDER BY CAST(SUBSTRING(employee_id, LENGTH(?) + 1) AS UNSIGNED) DESC LIMIT 1`,
       [`${prefix}%`, `${prefix}%`, `${prefix}%`, `${prefix}%`, `${prefix}%`, prefix]
     );
@@ -129,11 +126,26 @@ const createEmployee = async (req, res) => {
       query = `INSERT INTO dept_heads (employee_id, name, email, mobile, password, department_name, designation_name, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];
-    } else if(role === 'manager'){
-      query = `INSERT INTO managers (employee_id, name, email, mobile, password, department_name, designation_name, is_temporary_password)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-      values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];         
-    }else {
+    } else if (role === 'manager') {
+      query = `INSERT INTO managers (employee_id, name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      values = [
+        employeeId,
+        name,
+        email,
+        mobile,
+        emergency_phone || null,
+        address || null,
+        hashedPassword,
+        department_name,
+        designation_name,
+        employment_type || 'Full-time',
+        basic_salary || 0,
+        allowances || 0,
+        join_date,
+        true,
+      ];
+    } else {
       query = `INSERT INTO employees (employee_id, name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [
@@ -167,8 +179,8 @@ const createEmployee = async (req, res) => {
         mobile,
         role,
         is_temporary_password: true,
-        ...(role === 'dept_head' ? { department_name, designation_name } : {}),
-        ...(role === 'employee'
+        ...(role === 'dept_head' || role === 'manager' ? { department_name, designation_name } : {}),
+        ...(role === 'employee' || role === 'manager'
           ? { department_name, designation_name, employment_type, basic_salary, allowances, join_date }
           : {}),
       },

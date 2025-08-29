@@ -18,7 +18,7 @@ const loginUser = async (req, res) => {
   }
 
   const normalizedRole = role.toLowerCase();
-  if (!['super_admin', 'hr', 'dept_head', 'employee'].includes(normalizedRole)) {
+  if (!['super_admin', 'hr', 'dept_head', 'manager','employee'].includes(normalizedRole)) {
     return res.status(400).json({
       success: false,
       error: 'Unsupported role',
@@ -34,7 +34,9 @@ const loginUser = async (req, res) => {
       table = 'hrs';
     } else if (normalizedRole === 'dept_head') {
       table = 'dept_heads';
-    } else {
+    } else if(normalizedRole === 'manager'){
+      table = 'managers';
+    }else {
       table = 'employees';
     }
 
@@ -110,7 +112,8 @@ const changePassword = async (req, res) => {
     const table =
       role === 'super_admin' ? 'hrms_users' :
       role === 'hr' ? 'hrs' :
-      role === 'dept_head' ? 'dept_heads' : 'employees';
+      role === 'dept_head' ? 'dept_heads' : 
+      role === 'manager' ? 'managers' :   'employees';
 
     const userResult = await queryAsync(`SELECT * FROM ${table} WHERE id = ?`, [id]);
 

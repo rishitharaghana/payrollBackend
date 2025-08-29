@@ -194,7 +194,7 @@ const createEmployee = async (req, res) => {
 const updateEmployee = async (req, res) => {
   const userRole = req.user.role;
   const { id } = req.params;
-  const { name, email, mobile, emergency_phone, address, role } = req.body;
+  const { name, email, mobile, emergency_phone, address, role, department_name, designation_name, employment_type, basic_salary, allowances, join_date } = req.body;
 
   if (!["super_admin", "hr"].includes(userRole) && userRole !== role) {
     return res.status(403).json({ error: "Access denied: Insufficient permissions to update this record" });
@@ -211,13 +211,25 @@ const updateEmployee = async (req, res) => {
     return res.status(400).json({ error: "Invalid email format" });
   }
 
-const table = role === "hr"
-  ? "hrs"
-  : role === "dept_head"
-  ? "dept_heads"
-  : role === "manager"
-  ? "managers"
-  : "employees";
+  const table = role === "hr" ? "hrs" : role === "dept_head" ? "dept_heads" : role === "manager" ? "managers" : "employees";
+
+  if (['dept_head', 'employee', 'manager'].includes(role)) {
+    if (department_name && designation_name) {
+      const [designation] = await queryAsync(
+        'SELECT * FROM designations WHERE department_name = ? AND designation_name = ?',
+        [department_name, designation_name]
+      );
+      if (!designation) {
+        return res.status(400).json({ error: 'Invalid department or designation' });
+      }
+    }
+  }
+
+  if (['employee', 'manager'].includes(role)) {
+    if (employment_type && !['Full-time', 'Part-time', 'Internship', 'Contract'].includes(employment_type)) {
+      return res.status(400).json({ error: 'Invalid employment type' });
+    }
+  }
 
   try {
     const emailCheck = await queryAsync(
@@ -228,8 +240,46 @@ const table = role === "hr"
       return res.status(400).json({ error: "Email is already in use by another record" });
     }
 
-    const query = `UPDATE ${table} SET name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ? WHERE id = ?`;
-    const values = [name, email, mobile, emergency_phone || null, address || null, id];
+    let query, values;
+    if (role === 'hr') {
+      query = `UPDATE hrs SET name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ? WHERE id = ?`;
+      values = [name, email, mobile, emergency_phone || null, address || null, id];
+    } else if (role === 'dept_head') {
+      query = `UPDATE dept_heads SET name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, department_name = ?, designation_name = ? WHERE id = ?`;
+      values = [name, email, mobile, emergency_phone || null, address || null, department_name, designation_name, id];
+    } else if (role === 'manager') {
+      query = `UPDATE managers SET name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, department_name = ?, designation_name = ?, employment_type = ?, basic_salary = ?, allowances = ?, join_date = ? WHERE id = ?`;
+      values = [
+        name,
+        email,
+        mobile,
+        emergency_phone || null,
+        address || null,
+        department_name,
+        designation_name,
+        employment_type || 'Full-time',
+        basic_salary || 0,
+        allowances || 0,
+        join_date,
+        id,
+      ];
+    } else {
+      query = `UPDATE employees SET name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, department_name = ?, designation_name = ?, employment_type = ?, basic_salary = ?, allowances = ?, join_date = ? WHERE id = ?`;
+      values = [
+        name,
+        email,
+        mobile,
+        emergency_phone || null,
+        address || null,
+        department_name,
+        designation_name,
+        employment_type,
+        basic_salary || 0,
+        allowances || 0,
+        join_date,
+        id,
+      ];
+    }
 
     const result = await queryAsync(query, values);
     if (result.affectedRows === 0) {
@@ -238,7 +288,19 @@ const table = role === "hr"
 
     res.json({
       message: `${role} updated successfully`,
-      data: { id, role, name, email, mobile, emergency_phone, address },
+      data: {
+        id,
+        role,
+        name,
+        email,
+        mobile,
+        emergency_phone,
+        address,
+        ...(role === 'dept_head' || role === 'manager' ? { department_name, designation_name } : {}),
+        ...(role === 'employee' || role === 'manager'
+          ? { department_name, designation_name, employment_type, basic_salary, allowances, join_date }
+          : {}),
+      },
     });
   } catch (err) {
     console.error("DB error:", err);

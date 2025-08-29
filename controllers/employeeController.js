@@ -129,7 +129,7 @@ const createEmployee = async (req, res) => {
       query = `INSERT INTO dept_heads (employee_id, name, email, mobile, password, department_name, designation_name, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];
-    } else if(role === 'managers'){
+    } else if(role === 'manager'){
       query = `INSERT INTO managers (employee_id, name, email, mobile, password, department_name, designation_name, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];         

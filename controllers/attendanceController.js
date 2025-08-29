@@ -5,8 +5,7 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 
 const markAttendance = async (req, res) => {
   const { employee_id, date, login_time, logout_time, recipient, location } = req.body;
-  const { role, id } = req.user; // From JWT token (authenticateToken middleware)
-
+  const { role, id } = req.user; 
   if (!employee_id || !date || !login_time || !recipient || !location) {
     return res.status(400).json({ error: 'Date, login time, recipient, and location are required' });
   }
@@ -28,20 +27,17 @@ const markAttendance = async (req, res) => {
   }
 
   try {
-    // Determine user table based on role
     let userTable;
     if (role === 'super_admin') userTable = 'hrms_users';
     else if (role === 'hr') userTable = 'hrs';
     else if (role === 'dept_head') userTable = 'dept_heads';
     else userTable = 'employees';
 
-    // Verify employee_id belongs to the user or is valid for super_admin/hr
     const [user] = await queryAsync(`SELECT employee_id FROM ${userTable} WHERE id = ?`, [id]);
     if (!user || (user.employee_id !== employee_id && !['super_admin', 'hr'].includes(role))) {
       return res.status(403).json({ error: 'Unauthorized to mark attendance for this employee' });
     }
 
-    // Check for existing attendance record
     const [existingAttendance] = await queryAsync(
       'SELECT * FROM attendance WHERE employee_id = ? AND date = ?',
       [employee_id, date]
@@ -50,7 +46,6 @@ const markAttendance = async (req, res) => {
       return res.status(400).json({ error: 'Attendance already marked for this date' });
     }
 
-    // Auto-approve for hr and super_admin
     const status = ['hr', 'super_admin'].includes(role) ? 'Approved' : 'Pending';
 
     const query = `

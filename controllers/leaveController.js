@@ -118,9 +118,9 @@ const getPendingLeaves = async (req, res) => {
     const query = `
       SELECT l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
              l.status, l.approved_by, l.approved_at, l.total_days,
-             COALESCE(MAX(e.name), MAX(dh.name), MAX(h.name), 'Unknown') AS employee_name,
+             COALESCE(MAX(e.full_name), MAX(dh.full_name), MAX(h.full_name), 'Unknown') AS employee_name,
              COALESCE(MAX(e.department_name), MAX(dh.department_name), MAX(h.department_name), 'Unknown') AS department,
-             GROUP_CONCAT(COALESCE(h_rec.name, 'Unknown')) AS recipient_names
+             GROUP_CONCAT(COALESCE(h_rec.full_name, 'Unknown')) AS recipient_names
       FROM leaves l
       JOIN leave_recipients lr ON l.id = lr.leave_id
       LEFT JOIN employees e ON l.employee_id = e.employee_id
@@ -151,9 +151,9 @@ const getAllLeaves = async (req, res) => {
     let query = `
       SELECT l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
              l.status, l.approved_by, l.approved_at, l.total_days,
-             COALESCE(MAX(e.name), MAX(dh.name), MAX(h.name), 'Unknown') AS employee_name,
+             COALESCE(MAX(e.full_name), MAX(dh.full_name), MAX(h.full_name), 'Unknown') AS employee_name,
              COALESCE(MAX(e.department_name), MAX(dh.department_name), MAX(h.department_name), 'Unknown') AS department,
-             GROUP_CONCAT(COALESCE(h_rec.name, 'Unknown')) AS recipient_names
+             GROUP_CONCAT(COALESCE(h_rec.full_name, 'Unknown')) AS recipient_names
       FROM leaves l
       LEFT JOIN leave_recipients lr ON l.id = lr.leave_id
       LEFT JOIN employees e ON l.employee_id = e.employee_id
@@ -255,7 +255,7 @@ const getLeaves = async (req, res) => {
     const query = `
       SELECT l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
              l.status, l.approved_by, l.approved_at, l.total_days,
-             COALESCE(MAX(e.name), MAX(dh.name), MAX(h.name), 'Unknown') AS employee_name,
+             COALESCE(MAX(e.full_name), MAX(dh.full_name), MAX(h.full_name), 'Unknown') AS employee_name,
              COALESCE(MAX(e.department_name), MAX(dh.department_name), MAX(h.department_name), 'Unknown') AS department,
              GROUP_CONCAT(COALESCE(h_rec.name, 'Unknown')) AS recipient_names
       FROM leaves l
@@ -285,10 +285,10 @@ const getRecipientOptions = async (req, res) => {
   try {
     let recipients = [];
     if (role === "employee" || role === "dept_head") {
-      recipients = await queryAsync("SELECT employee_id, name FROM hrs WHERE role = 'hr'");
+      recipients = await queryAsync("SELECT employee_id, full_name FROM hrs WHERE role = 'hr'");
     } else if (role === "hr") {
       recipients = await queryAsync(
-        "SELECT employee_id, name FROM hrs WHERE role = 'super_admin'"
+        "SELECT employee_id, full_name FROM hrs WHERE role = 'super_admin'"
       );
     } else {
       return res.status(403).json({ error: "Invalid role for fetching recipients" });

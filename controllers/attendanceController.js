@@ -85,7 +85,7 @@ const fetchEmployeeAttendance = async (req, res) => {
     else if (role === 'dept_head') userTable = 'dept_heads';
     else userTable = 'employees';
 
-    const [user] = await queryAsync(`SELECT employee_id, name FROM ${userTable} WHERE id = ?`, [id]);
+    const [user] = await queryAsync(`SELECT employee_id, full_name FROM ${userTable} WHERE id = ?`, [id]);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -100,7 +100,7 @@ const fetchEmployeeAttendance = async (req, res) => {
       message: 'Attendance records fetched successfully',
       data: attendance.map((record) => ({
         ...record,
-        employee_name: user.name,
+        employee_name: user.full_name,
       })),
     });
   } catch (err) {
@@ -119,7 +119,7 @@ const fetchAllAttendance = async (req, res) => {
   try {
     let query = `
       SELECT a.id, a.employee_id, DATE_FORMAT(a.date, '%Y-%m-%d') AS date, a.login_time, a.logout_time, a.recipient, a.location, a.status, a.created_at,
-             COALESCE(e.name, h.name, d.name, u.name) AS employee_name,
+             COALESCE(e.full_name, h.full_name, d.full_name, u.full_name) AS employee_name,
              COALESCE(e.department_name, d.department_name, h.department_name, u.department_name) AS department_name
       FROM attendance a
       LEFT JOIN employees e ON a.employee_id = e.employee_id

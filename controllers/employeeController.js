@@ -30,8 +30,8 @@ const generateEmployeeId = async () => {
 const createEmployeePersonalDetails = async (req, res) => {
   const userRole = req.user.role;
   const userId = req.user.employee_id;
-  
   const {
+    employeeId = req.user.employee_id,
     fullName,
     email,
     phone,
@@ -50,12 +50,12 @@ const createEmployeePersonalDetails = async (req, res) => {
     password = "defaultPass123",
   } = req.body;
 
-  if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  if (!["super_admin", "hr"].includes(userRole) && employeeId !== userId) {
+    return res.status(403).json({ error: "Access denied: You can only add your own personal details" });
   }
 
-  if (!fullName?.trim() || !email?.trim() || !phone?.trim() || !gender) {
-    return res.status(400).json({ error: "Full name, email, phone, and gender are required" });
+  if (!fullName?.trim() || !email?.trim() || !phone?.trim() || !gender || !employeeId) {
+    return res.status(400).json({ error: "Full name, email, phone, gender, and employee ID are required" });
   }
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -66,54 +66,81 @@ const createEmployeePersonalDetails = async (req, res) => {
     return res.status(400).json({ error: "Phone must be a 10-digit number" });
   }
 
-  if (alternatePhone && !/^[0-9]{10}$/.test(alternatePhone)) {
-    return res.status(400).json({ error: "Alternate phone must be a 10-digit number" });
-  }
-
-  if (positionType === "experienced" && (!employerIdName || !positionTitle || !employmentType || !joiningDate)) {
-    return res.status(400).json({ error: "Employer ID/Name, position title, employment type, and joining date are required for experienced employees" });
-  }
-
   try {
-    // Check for existing mobile or email in employees
+    const [employee] = await queryAsync(
+      `SELECT employee_id, full_name, email, mobile FROM employees WHERE employee_id = ?`,
+      [employeeId]
+    );
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    // Enforce consistency for employees
+    if (userRole === "employee" && (fullName !== employee.full_name || email !== employee.email || phone !== employee.mobile)) {
+      return res.status(400).json({ error: "Full name, email, and phone must match your employee record" });
+    }
+
+    const [existingDetails] = await queryAsync(
+      `SELECT employee_id FROM personal_details WHERE employee_id = ?`,
+      [employeeId]
+    );
+    if (existingDetails) {
+      return res.status(400).json({ error: "Personal details already exist for this employee" });
+    }
+
     const [existingMobile] = await queryAsync(
       `SELECT mobile FROM (
-        SELECT mobile FROM employees WHERE TRIM(mobile) = ?
+        SELECT mobile FROM employees WHERE TRIM(mobile) = ? AND employee_id != ?
         UNION
-        SELECT mobile FROM hrs WHERE TRIM(mobile) = ?
+        SELECT mobile FROM hrs WHERE TRIM(mobile) = ? AND employee_id != ?
         UNION
-        SELECT mobile FROM dept_heads WHERE TRIM(mobile) = ?
+        SELECT mobile FROM dept_heads WHERE TRIM(mobile) = ? AND employee_id != ?
         UNION
-        SELECT mobile FROM managers WHERE TRIM(mobile) = ?
+        SELECT mobile FROM managers WHERE TRIM(mobile) = ? AND employee_id != ?
         UNION
-        SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ?
+        SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ? AND employee_id != ?
       ) AS all_users`,
-      [phone.trim(), phone.trim(), phone.trim(), phone.trim(), phone.trim()]
+      [phone.trim(), employeeId, phone.trim(), employeeId, phone.trim(), employeeId, phone.trim(), employeeId, phone.trim(), employeeId]
     );
     if (existingMobile) {
       return res.status(400).json({ error: "Phone number already in use" });
     }
 
     const [existingEmail] = await queryAsync(
-      `SELECT email FROM employees WHERE TRIM(LOWER(email)) = ?`,
-      [email.trim().toLowerCase()]
+      `SELECT email FROM (
+        SELECT email FROM employees WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
+        UNION
+        SELECT email FROM hrs WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
+        UNION
+        SELECT email FROM dept_heads WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
+        UNION
+        SELECT email FROM managers WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
+        UNION
+        SELECT email FROM hrms_users WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
+      ) AS all_users`,
+      [email.trim().toLowerCase(), employeeId, email.trim().toLowerCase(), employeeId, email.trim().toLowerCase(), employeeId, email.trim().toLowerCase(), employeeId, email.trim().toLowerCase(), employeeId]
     );
     if (existingEmail) {
       return res.status(400).json({ error: "Email already in use" });
     }
 
-    // Generate employee ID and insert into employees
-    const employeeId = await generateEmployeeId();
-    const hashedPassword = await bcrypt.hash(password, 10);
+    let finalEmployeeId = employeeId;
+    if (["super_admin", "hr"].includes(userRole)) {
+      const [existingEmployee] = await queryAsync(
+        `SELECT employee_id FROM employees WHERE employee_id = ?`,
+        [employeeId]
+      );
+      if (!existingEmployee) {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const employeeQuery = `
+          INSERT INTO employees (employee_id, full_name, email, mobile, password, role, is_temporary_password)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `;
+        const employeeValues = [employeeId, fullName, email, phone, hashedPassword, "employee", true];
+        await queryAsync(employeeQuery, employeeValues);
+      }
+    }
 
-    const employeeQuery = `
-      INSERT INTO employees (employee_id, name, email, mobile, password, role, is_temporary_password)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `;
-    const employeeValues = [employeeId, fullName, email, phone, hashedPassword, "employee", true];
-    const employeeResult = await queryAsync(employeeQuery, employeeValues);
-
-    // Insert into personal_details
     const personalQuery = `
       INSERT INTO personal_details (
         employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
@@ -122,13 +149,13 @@ const createEmployeePersonalDetails = async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const personalValues = [
-      employeeId,
-      fullName,
+      finalEmployeeId,
+      employee.full_name, // Use employees table data for consistency
       fatherName || null,
       motherName || null,
-      phone,
+      employee.mobile, // Use employees table data for consistency
       alternatePhone || null,
-      email,
+      employee.email, // Use employees table data for consistency
       gender,
       presentAddress || null,
       previousAddress || null,
@@ -145,7 +172,7 @@ const createEmployeePersonalDetails = async (req, res) => {
 
     res.status(201).json({
       message: "Personal details created successfully",
-      data: { id: personalResult.insertId, employee_id: employeeId },
+      data: { id: personalResult.insertId, employee_id: finalEmployeeId },
     });
   } catch (err) {
     console.error("DB error:", err.message, err.sqlMessage, err.code);
@@ -155,7 +182,8 @@ const createEmployeePersonalDetails = async (req, res) => {
 
 const createEducationDetails = async (req, res) => {
   const userRole = req.user.role;
-  const {
+  const userId = req.user.employee_id;
+  let {
     employeeId,
     tenthClassName,
     tenthClassMarks,
@@ -167,31 +195,72 @@ const createEducationDetails = async (req, res) => {
     postgraduationMarks,
   } = req.body;
 
-  if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  // Default employeeId to logged-in user's ID if not provided
+  if (!employeeId) {
+    employeeId = userId;
   }
 
-  if (!employeeId) {
-    return res.status(400).json({ error: "Employee ID is required" });
+  // Normalize for case/whitespace
+  const normalizedBodyId = employeeId?.trim().toUpperCase();
+  const normalizedUserId = userId?.trim().toUpperCase();
+
+  // Allow super_admin, hr, and employee (for their own details only)
+  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+  if (userRole === "employee" && normalizedBodyId !== normalizedUserId) {
+    return res.status(403).json({ error: "Access denied: You can only add your own education details" });
+  }
+
+  // Validate numeric fields if provided
+  const numericFields = [
+    { name: "tenthClassMarks", value: tenthClassMarks },
+    { name: "intermediateMarks", value: intermediateMarks },
+    { name: "graduationMarks", value: graduationMarks },
+    { name: "postgraduationMarks", value: postgraduationMarks },
+  ];
+  for (const field of numericFields) {
+    if (
+      field.value &&
+      (isNaN(field.value) || Number(field.value) < 0 || Number(field.value) > 100)
+    ) {
+      return res.status(400).json({
+        error: `Invalid ${field.name} (must be a number between 0 and 100)`,
+      });
+    }
   }
 
   try {
-    const [employee] = await queryAsync(`SELECT employee_id FROM employees WHERE employee_id = ?`, [
-      employeeId,
-    ]);
+    // Check if employee exists
+    const [employee] = await queryAsync(
+      `SELECT employee_id FROM employees WHERE UPPER(TRIM(employee_id)) = ?`,
+      [normalizedBodyId]
+    );
     if (!employee) {
       return res.status(404).json({ error: "Employee not found" });
     }
 
+    // Prevent duplicate education details
+    const [existingDetails] = await queryAsync(
+      `SELECT employee_id FROM education_details WHERE UPPER(TRIM(employee_id)) = ?`,
+      [normalizedBodyId]
+    );
+    if (existingDetails) {
+      return res
+        .status(400)
+        .json({ error: "Education details already exist for this employee" });
+    }
+
+    // Insert education details (added created_by to satisfy NOT NULL)
     const query = `
       INSERT INTO education_details (
         employee_id, tenth_class_name, tenth_class_marks, intermediate_name,
         intermediate_marks, graduation_name, graduation_marks, postgraduation_name,
-        postgraduation_marks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        postgraduation_marks, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const values = [
-      employeeId,
+      normalizedBodyId,
       tenthClassName || null,
       tenthClassMarks || null,
       intermediateName || null,
@@ -200,12 +269,14 @@ const createEducationDetails = async (req, res) => {
       graduationMarks || null,
       postgraduationName || null,
       postgraduationMarks || null,
+      userId, // created_by (from logged-in user)
     ];
 
     const result = await queryAsync(query, values);
+
     res.status(201).json({
       message: "Education details created successfully",
-      data: { id: result.insertId, employee_id: employeeId },
+      data: { id: result.insertId, employee_id: normalizedBodyId },
     });
   } catch (err) {
     console.error("DB error:", err.message, err.sqlMessage, err.code);
@@ -307,7 +378,7 @@ const createBankDetails = async (req, res) => {
 const createEmployee = async (req, res) => {
   const userRole = req.user.role;
   const {
-    name,
+      name,
     email,
     mobile,
     emergency_phone,
@@ -396,19 +467,19 @@ const createEmployee = async (req, res) => {
 
     let query, values;
     if (role === "hr") {
-      query = `INSERT INTO hrs (employee_id, name, email, mobile, password, is_temporary_password)
+      query = `INSERT INTO hrs (employee_id, full_name, email, mobile, password, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?)`;
       values = [employeeId, name, email, mobile, hashedPassword, true];
     } else if (role === "dept_head") {
-      query = `INSERT INTO dept_heads (employee_id, name, email, mobile, password, department_name, designation_name, is_temporary_password)
+      query = `INSERT INTO dept_heads (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];
     } else if (role === "manager") {
-      query = `INSERT INTO managers (employee_id, name, email, mobile, password, department_name, designation_name, is_temporary_password)
+      query = `INSERT INTO managers (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];
     } else {
-      query = `INSERT INTO employees (employee_id, name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password)
+      query = `INSERT INTO employees (employee_id, full_name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [
         employeeId,
@@ -488,7 +559,7 @@ const updateEmployee = async (req, res) => {
       return res.status(400).json({ error: "Email is already in use by another record" });
     }
 
-    const query = `UPDATE ${table} SET name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ? WHERE id = ?`;
+    const query = `UPDATE ${table} SET full_name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ? WHERE id = ?`;
     const values = [name, email, mobile, emergency_phone || null, address || null, id];
 
     const result = await queryAsync(query, values);
@@ -514,13 +585,13 @@ const fetchEmployees = async (req, res) => {
     }
 
     const deptHeads = await queryAsync(
-      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, 'dept_head' as role FROM dept_heads"
+      "SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, 'dept_head' as role FROM dept_heads"
     );
     const managers = await queryAsync(
-      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, 'manager' as role FROM managers"
+      "SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, 'manager' as role FROM managers"
     );
     const employees = await queryAsync(
-      "SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, 'employee' as role FROM employees"
+      "SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, 'employee' as role FROM employees"
     );
 
     const allEmployees = [...deptHeads, ...managers, ...employees];
@@ -585,25 +656,25 @@ const deleteEmployee = async (req, res) => {
 
 const getCurrentUserProfile = async (req, res) => {
   const userRole = req.user.role;
-  const userId = req.user.id;
+  const userId = req.user.employee_id; // e.g., MO-EMP-002
 
   try {
     let query, table;
     if (userRole === "super_admin") {
       table = "hrms_users";
-      query = "SELECT id, employee_id, name, email, mobile, is_temporary_password, role FROM hrms_users WHERE id = ?";
+      query = "SELECT employee_id, full_name, email, mobile FROM hrms_users WHERE employee_id = ?";
     } else if (userRole === "hr") {
       table = "hrs";
-      query = "SELECT id, employee_id, name, email, mobile, is_temporary_password, 'hr' as role FROM hrs WHERE id = ?";
+      query = "SELECT employee_id, full_name, email, mobile FROM hrs WHERE employee_id = ?";
     } else if (userRole === "dept_head") {
       table = "dept_heads";
-      query = "SELECT id, employee_id, name, email, mobile, department_name, designation_name, is_temporary_password, 'dept_head' as role FROM dept_heads WHERE id = ?";
+      query = "SELECT employee_id, full_name, email, mobile FROM dept_heads WHERE employee_id = ?";
     } else if (userRole === "manager") {
       table = "managers";
-      query = "SELECT id, employee_id, name, email, mobile, department_name, designation_name, is_temporary_password, 'manager' as role FROM managers WHERE id = ?";
+      query = "SELECT employee_id, full_name, email, mobile FROM managers WHERE employee_id = ?";
     } else if (userRole === "employee") {
       table = "employees";
-      query = "SELECT id, employee_id, name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password, 'employee' as role FROM employees WHERE id = ?";
+      query = "SELECT employee_id, full_name, email, mobile FROM employees WHERE employee_id = ?";
     } else {
       return res.status(403).json({ error: "Invalid user role" });
     }
@@ -614,7 +685,58 @@ const getCurrentUserProfile = async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    res.json({ message: "User profile fetched successfully", data: user });
+    res.json({
+      message: "User profile fetched successfully",
+      data: {
+        employee_id: user.employee_id,
+        fullName: user.full_name,
+        email: user.email,
+        mobile: user.mobile,
+      },
+    });
+  } catch (err) {
+    console.error("DB error:", err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: "Database error" });
+  }
+};
+
+const getEmployeeProgress = async (req, res) => {
+  const userRole = req.user.role;
+  const userId = req.user.employee_id;
+
+  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+
+  try {
+    const [personalDetails] = await queryAsync(
+      `SELECT employee_id FROM personal_details WHERE employee_id = ?`,
+      [userId]
+    );
+    const [educationDetails] = await queryAsync(
+      `SELECT employee_id FROM education_details WHERE employee_id = ?`,
+      [userId]
+    );
+    const [bankDetails] = await queryAsync(
+      `SELECT employee_id FROM bank_details WHERE employee_id = ?`,
+      [userId]
+    );
+    const [documents] = await queryAsync(
+      `SELECT employee_id FROM documents WHERE employee_id = ?`,
+      [userId]
+    );
+
+    const progress = {
+      personalDetails: !!personalDetails,
+      educationDetails: !!educationDetails,
+      bankDetails: !!bankDetails,
+      documents: !!documents,
+    };
+
+    res.json({
+      message: "Progress fetched successfully",
+      data: progress,
+    });
   } catch (err) {
     console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: "Database error" });
@@ -631,4 +753,5 @@ module.exports = {
   fetchEmployees,
   deleteEmployee,
   getCurrentUserProfile,
+  getEmployeeProgress,
 };

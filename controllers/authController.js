@@ -76,7 +76,7 @@ const loginUser = async (req, res) => {
       token,
       id: user.id,
       employee_id: user.employee_id || null, 
-      name: user.name,
+      name: user.full_name,
       role: normalizedRole,
       mobile: user.mobile,
       email: user.email || null,

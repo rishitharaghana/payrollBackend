@@ -12,6 +12,7 @@ const payrollRouter = require('./routes/payrollRoutes');
 const payslipRouter  = require('./routes/payslipRoutes');
 const travelExpensesRouter = require('./routes/travelExpensesRoutes');
 const performanceRouter = require('./routes/performanceRoutes')
+require("./config/Scheduler");
 
 app.use(cors());
 app.use(express.json());

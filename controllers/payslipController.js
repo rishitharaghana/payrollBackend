@@ -24,19 +24,33 @@ const generatePayslip = async (req, res) => {
     const query = `
       SELECT 
         p.employee_id, p.month, p.gross_salary, p.net_salary, p.pf_deduction, 
-        p.esic_deduction, p.tax_deduction, p.status, p.payment_method, p.payment_date, 
-        p.created_by, p.basic_salary, p.hra, p.da, p.other_allowances, p.professional_tax,
-        e.employee_name, e.department, e.position, e.pan_number, e.uan_number, 
-        e.bank_account_number, e.ifsc_code, c.company_name, c.company_pan, c.company_gstin
+        p.esic_deduction, p.tax_deduction, p.professional_tax, p.basic_salary, 
+        p.hra, p.da, p.other_allowances, p.status, p.payment_method, p.payment_date, 
+        p.created_by, e.employee_name, COALESCE(e.department_name, 'HR') AS department, 
+        e.designation_name AS position, e.pan_number, e.uan_number, 
+        b.bank_account_number, b.ifsc_code, c.company_name, c.company_pan, c.company_gstin
       FROM payroll p
-      JOIN employees e ON p.employee_id = e.employee_id
+      JOIN (
+        SELECT employee_id, full_name AS employee_name, department_name, designation_name, pan_number, uan_number 
+        FROM employees 
+        UNION 
+        SELECT employee_id, full_name, NULL, NULL, NULL, NULL 
+        FROM hrs 
+        UNION 
+        SELECT employee_id, full_name, department_name, designation_name, NULL, NULL 
+        FROM dept_heads 
+        UNION 
+        SELECT employee_id, full_name, department_name, designation_name, NULL, NULL 
+        FROM managers
+      ) e ON p.employee_id = e.employee_id
+      LEFT JOIN bank_details b ON p.employee_id = b.employee_id
       JOIN company c ON p.company_id = c.company_id
-      WHERE p.employee_id = ? AND p.month = ?
+      WHERE p.employee_id = ? AND p.month = ? AND p.status = 'Approved'
     `;
     const rows = await queryAsync(query, [employeeId, month]);
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'No payslip found for the specified employee and month' });
+      return res.status(404).json({ error: 'No approved payslip found for the specified employee and month' });
     }
 
     const employee = rows[0];
@@ -115,6 +129,7 @@ const generatePayslip = async (req, res) => {
     res.status(error.message.includes('Invalid') ? 400 : 500).json({ message: 'Error generating payslip PDF' });
   }
 };
+
 const getPayslips = async (req, res) => {
   try {
     const query = `

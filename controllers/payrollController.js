@@ -122,67 +122,101 @@ const createPayroll = async (req, res) => {
 };
 
 
-const generatePayroll = async (req, res) => {
-  const userRole = req.user.role;
-  if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied" });
-  }
 
+const generatePayroll = async (req, res) => {
   const { month } = req.body;
-  if (!month || !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
-    return res.status(400).json({ error: "Invalid month format. Use YYYY-MM" });
+  const user = req.user;
+
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+    return res.status(400).json({ error: "Valid month (yyyy-MM) is required" });
   }
 
   try {
-    const employees = await queryAsync(
-      "SELECT * FROM employees WHERE status='active'"
-    );
+    // Fetch all employees
+    const employees = await queryAsync(`
+      SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses
+      FROM employees
+      UNION
+      SELECT employee_id, full_name, NULL as department, basic_salary, allowances, bonuses
+      FROM hrs
+      UNION
+      SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses
+      FROM dept_heads
+      UNION
+      SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses
+      FROM managers
+    `);
 
-    if (!employees.length)
-      return res.status(404).json({ error: "No active employees found" });
+    console.log("Employees fetched for payroll:", employees); // Debug log
 
-    const payrolls = employees.map((emp) => {
-      const grossSalary =
-        emp.basic_salary + emp.allowances + (emp.bonuses || 0);
-      const pfDeduction = grossSalary * 0.12;
-      const esicDeduction = grossSalary * 0.035;
-      const taxDeduction = calculateTax(grossSalary);
-      const netSalary =
-        grossSalary - (pfDeduction + esicDeduction + taxDeduction);
+    if (!employees.length) {
+      return res.status(404).json({ error: "No employees found" });
+    }
 
-      return [
-        emp.name,
-        emp.id,
-        emp.department,
-        grossSalary,
-        pfDeduction,
-        esicDeduction,
-        taxDeduction,
-        netSalary,
-        "Pending",
-        "Bank Transfer",
+    // Fetch company details
+    const company = await queryAsync("SELECT * FROM company LIMIT 1");
+    if (!company.length) {
+      return res.status(404).json({ error: "Company details not found" });
+    }
+
+    // Delete existing payroll records for the month
+    await queryAsync("DELETE FROM payroll WHERE month = ?", [month]);
+    console.log(`Deleted existing payroll records for month: ${month}`);
+
+    const payrollRecords = [];
+    for (const emp of employees) {
+      const gross_salary =
+        (parseFloat(emp.basic_salary) || 0) +
+        (parseFloat(emp.allowances) || 0) +
+        (parseFloat(emp.bonuses) || 0);
+      const pf_deduction = Math.min((parseFloat(emp.basic_salary) || 0) * 0.12, 1800); // 12% of basic, capped at ₹1800
+      const esic_deduction = gross_salary <= 21000 ? gross_salary * 0.0075 : 0; // 0.75% if gross ≤ ₹21,000
+      const professional_tax = gross_salary <= 15000 ? 0 : 200; // ₹200 for gross > ₹15,000
+      const tax_deduction = gross_salary * 0.1; // Simplified 10% income tax
+      const net_salary =
+        gross_salary - pf_deduction - esic_deduction - professional_tax - tax_deduction;
+
+      const payrollData = {
+        employee_id: emp.employee_id,
+        employee_name: emp.full_name,
+        department: emp.department || "HR", // Default for hrs
+        gross_salary,
+        net_salary,
+        pf_deduction,
+        esic_deduction,
+        professional_tax,
+        tax_deduction,
+        basic_salary: parseFloat(emp.basic_salary) || 0,
+        hra: (parseFloat(emp.allowances) || 0) * 0.4,
+        da: (parseFloat(emp.allowances) || 0) * 0.5,
+        other_allowances: (parseFloat(emp.allowances) || 0) * 0.1,
+        status: user.role === "super_admin" ? "Processed" : "Pending",
+        payment_method: "Bank Transfer",
+        payment_date: new Date().toISOString().split("T")[0],
         month,
-        new Date().toISOString().slice(0, 10),
-        req.user.username,
-      ];
-    });
+        created_by: user.employee_id,
+        company_id: company[0].company_id,
+      };
 
-    const placeholders = payrolls
-      .map(() => "(?,?,?,?,?,?,?,?,?,?,?,?,?)")
-      .join(",");
-    await queryAsync(
-      `INSERT INTO payroll 
-      (employee_name, employee_id, department, gross_salary, pf_deduction, esic_deduction, tax_deduction, net_salary, status, payment_method, month, payment_date, created_by) 
-      VALUES ${placeholders}`,
-      payrolls.flat()
+      await queryAsync("INSERT INTO payroll SET ?", payrollData);
+      payrollRecords.push(payrollData);
+      console.log(`Payroll record created for employee_id: ${emp.employee_id}`); // Debug log
+    }
+
+    res
+      .status(201)
+      .json({ message: "Payroll generated successfully", data: payrollRecords });
+  } catch (error) {
+    console.error(
+      "Error generating payroll:",
+      error.message,
+      error.sqlMessage,
+      error.code
     );
-
-    res.json({ message: `Payroll generated for ${payrolls.length} employees` });
-  } catch (err) {
-    console.error(err);
     res.status(500).json({ error: "Failed to generate payroll" });
   }
 };
+
 
 const downloadPayrollPDF = async (req, res) => {
   const userRole = req.user.role;

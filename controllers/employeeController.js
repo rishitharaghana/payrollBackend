@@ -378,18 +378,8 @@ const createBankDetails = async (req, res) => {
 const createEmployee = async (req, res) => {
   const userRole = req.user.role;
   const {
-      name,
-    email,
-    mobile,
-    emergency_phone,
-    address,
-    department_name,
-    designation_name,
-    employment_type,
-    basic_salary,
-    allowances,
-    join_date,
-    role = "employee",
+    name, email, mobile, emergency_phone, address, department_name, designation_name,
+    employment_type, basic_salary, allowances, bonuses, join_date, role = "employee",
   } = req.body;
 
   if (!["super_admin", "hr"].includes(userRole)) {
@@ -413,9 +403,9 @@ const createEmployee = async (req, res) => {
 
   const table = role === "hr" ? "hrs" : role === "dept_head" ? "dept_heads" : role === "manager" ? "managers" : "employees";
 
-  if (["dept_head", "employee"].includes(role)) {
+  if (["dept_head", "employee", "manager"].includes(role)) {
     if (!department_name || !designation_name) {
-      return res.status(400).json({ error: "Department and designation are required for Department Head or Employee" });
+      return res.status(400).json({ error: "Department and designation are required" });
     }
     const [designation] = await queryAsync(
       "SELECT * FROM designations WHERE department_name = ? AND designation_name = ?",
@@ -426,12 +416,9 @@ const createEmployee = async (req, res) => {
     }
   }
 
-  if (role === "employee") {
-    if (!employment_type || !join_date) {
-      return res.status(400).json({ error: "Employment type and join date are required for Employee" });
-    }
-    if (!["Full-time", "Part-time", "Internship", "Contract"].includes(employment_type)) {
-      return res.status(400).json({ error: "Invalid employment type" });
+  if (["employee", "hr", "dept_head", "manager"].includes(role)) {
+    if (isNaN(basic_salary) || basic_salary < 0 || isNaN(allowances) || allowances < 0) {
+      return res.status(400).json({ error: "Valid basic salary and allowances are required" });
     }
   }
 
@@ -467,35 +454,23 @@ const createEmployee = async (req, res) => {
 
     let query, values;
     if (role === "hr") {
-      query = `INSERT INTO hrs (employee_id, full_name, email, mobile, password, is_temporary_password)
-               VALUES (?, ?, ?, ?, ?, ?)`;
-      values = [employeeId, name, email, mobile, hashedPassword, true];
+      query = `INSERT INTO hrs (employee_id, full_name, email, mobile, password, is_temporary_password, basic_salary, allowances, bonuses)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      values = [employeeId, name, email, mobile, hashedPassword, true, basic_salary || 0, allowances || 0, bonuses || 0];
     } else if (role === "dept_head") {
-      query = `INSERT INTO dept_heads (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-      values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];
+      query = `INSERT INTO dept_heads (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password, basic_salary, allowances, bonuses)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true, basic_salary || 0, allowances || 0, bonuses || 0];
     } else if (role === "manager") {
-      query = `INSERT INTO managers (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-      values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true];
+      query = `INSERT INTO managers (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password, basic_salary, allowances, bonuses)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      values = [employeeId, name, email, mobile, hashedPassword, department_name, designation_name, true, basic_salary || 0, allowances || 0, bonuses || 0];
     } else {
-      query = `INSERT INTO employees (employee_id, full_name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, join_date, is_temporary_password)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      query = `INSERT INTO employees (employee_id, full_name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, bonuses, join_date, is_temporary_password)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       values = [
-        employeeId,
-        name,
-        email,
-        mobile,
-        emergency_phone || null,
-        address || null,
-        hashedPassword,
-        department_name,
-        designation_name,
-        employment_type,
-        basic_salary || 0,
-        allowances || 0,
-        join_date,
-        true,
+        employeeId, name, email, mobile, emergency_phone || null, address || null, hashedPassword,
+        department_name, designation_name, employment_type, basic_salary || 0, allowances || 0, bonuses || 0, join_date, true
       ];
     }
 
@@ -510,10 +485,11 @@ const createEmployee = async (req, res) => {
         mobile,
         role,
         is_temporary_password: true,
-        ...(role === "dept_head" ? { department_name, designation_name } : {}),
-        ...(role === "employee" || role === "manager"
-          ? { department_name, designation_name, employment_type, basic_salary, allowances, join_date }
-          : {}),
+        basic_salary,
+        allowances,
+        bonuses,
+        ...(role === "dept_head" || role === "manager" ? { department_name, designation_name } : {}),
+        ...(role === "employee" ? { department_name, designation_name, employment_type, join_date } : {}),
       },
     });
   } catch (err) {

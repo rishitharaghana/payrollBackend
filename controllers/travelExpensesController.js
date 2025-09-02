@@ -112,7 +112,7 @@ const fetchTravelExpenses = async (req, res) => {
       SELECT te.*, ei.id AS expense_item_id, ei.expense_date, ei.purpose AS expense_purpose, ei.amount,
              er.id AS receipt_id, er.file_name, er.file_path, er.file_size,
              COALESCE(e.full_name, h.full_name, d.full_name, u.full_name) AS employee_name,
-             COALESCE(e.department_name, d.department_name, h.department_name, u.department) AS department_name
+             COALESCE(e.department_name, d.department_name, h.department_name, u.department_name) AS department_name
       FROM travel_expenses te
       LEFT JOIN expense_items ei ON te.id = ei.travel_expense_id
       LEFT JOIN expense_receipts er ON te.id = er.travel_expense_id
@@ -128,7 +128,7 @@ const fetchTravelExpenses = async (req, res) => {
       if (!deptHead) {
         return res.status(403).json({ error: 'Access denied: Not a department head' });
       }
-      query += ' WHERE (e.department_name = ? OR d.department_name = ? OR h.department_name = ? OR u.department = ?) AND te.status = ?';
+      query += ' WHERE (e.department_name = ? OR d.department_name = ? OR h.department_name = ? OR u.department_name = ?) AND te.status = ?';
       params = [deptHead.department_name, deptHead.department_name, deptHead.department_name, deptHead.department_name, 'Pending'];
     } else if (role === 'employee') {
       query += ' WHERE te.employee_id = ?';
@@ -208,7 +208,7 @@ const fetchTravelExpenseById = async (req, res) => {
       SELECT te.*, ei.id AS expense_item_id, ei.expense_date, ei.purpose AS expense_purpose, ei.amount,
              er.id AS receipt_id, er.file_name, er.file_path, er.file_size,
              COALESCE(e.full_name, h.full_name, d.full_name, u.full_name) AS employee_name,
-             COALESCE(e.department_name, d.department_name, h.department_name, u.department) AS department_name
+             COALESCE(e.department_name, d.department_name, h.department_name, u.department_name) AS department_name
       FROM travel_expenses te
       LEFT JOIN expense_items ei ON te.id = ei.travel_expense_id
       LEFT JOIN expense_receipts er ON te.id = er.travel_expense_id
@@ -344,7 +344,7 @@ const downloadReceipt = async (req, res) => {
     }
 
     const [receipt] = await queryAsync(
-      `SELECT er.*, te.employee_id, COALESCE(e.department_name, d.department_name, h.department_name, u.department) AS department_name
+      `SELECT er.*, te.employee_id, COALESCE(e.department_name, d.department_name, h.department_name, u.department_name) AS department_name
        FROM expense_receipts er
        LEFT JOIN travel_expenses te ON er.travel_expense_id = te.id
        LEFT JOIN employees e ON te.employee_id = e.employee_id

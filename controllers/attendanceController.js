@@ -137,7 +137,7 @@ const fetchAllAttendance = async (req, res) => {
       if (!deptHead) {
         return res.status(403).json({ error: 'Access denied: Not a department head' });
       }
-      query += ' WHERE (e.department_name = ? OR d.department_name = ? OR h.department_name = ? OR u.department = ?) AND a.recipient = ? ORDER BY a.date DESC';
+      query += ' WHERE (e.department_name = ? OR d.department_name = ? OR h.department_name = ? OR u.department_name = ?) AND a.recipient = ? ORDER BY a.date DESC';
       params = [deptHead.department_name, deptHead.department_name, deptHead.department_name, deptHead.department_name, 'hr'];
     } else {
       query += ' WHERE a.recipient = ? ORDER BY a.date DESC';

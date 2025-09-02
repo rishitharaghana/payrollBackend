@@ -217,7 +217,6 @@ const generatePayroll = async (req, res) => {
   }
 };
 
-
 const downloadPayrollPDF = async (req, res) => {
   const userRole = req.user.role;
   if (!["super_admin", "hr"].includes(userRole)) {

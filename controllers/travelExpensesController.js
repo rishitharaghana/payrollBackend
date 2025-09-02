@@ -111,7 +111,7 @@ const fetchTravelExpenses = async (req, res) => {
     let query = `
       SELECT te.*, ei.id AS expense_item_id, ei.expense_date, ei.purpose AS expense_purpose, ei.amount,
              er.id AS receipt_id, er.file_name, er.file_path, er.file_size,
-             COALESCE(e.full_name, h.full_name, d.full_name, u.name) AS employee_name,
+             COALESCE(e.full_name, h.full_name, d.full_name, u.full_name) AS employee_name,
              COALESCE(e.department_name, d.department_name, h.department_name, u.department) AS department_name
       FROM travel_expenses te
       LEFT JOIN expense_items ei ON te.id = ei.travel_expense_id

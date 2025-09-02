@@ -12,6 +12,7 @@ const {
   createEducationDetails,
   createBankDetails,
   getEmployeeProgress,
+  getEmployeeById,
 } = require("../controllers/employeeController");
 
 router.post("/employees", authenticateToken, createEmployee);
@@ -24,5 +25,7 @@ router.put("/employees/:id", authenticateToken, updateEmployee);
 router.delete("/employees/:id", authenticateToken, deleteEmployee);
 router.get("/profile", authenticateToken, getCurrentUserProfile);
 router.get('/employees/progress', authenticateToken, getEmployeeProgress);
+router.get('/employee/:id', authenticateToken, getEmployeeById);
+
 
 module.exports = router;

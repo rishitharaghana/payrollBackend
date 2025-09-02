@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 const path = require('path');
+const http = require('http');
 const upload = require('./middleware/upload');
 const authRouter = require("./routes/authRoutes");
 const employeeRouter = require('./routes/employeeRoutes');
@@ -13,15 +14,23 @@ const payslipRouter  = require('./routes/payslipRoutes');
 const travelExpensesRouter = require('./routes/travelExpensesRoutes');
 const performanceRouter = require('./routes/performanceRoutes')
 require("./config/Scheduler");
+const siteVisitRouter = require('./routes/siteVisitRoutes')
+const {initializeSocket} = require('./controllers/siteVisitController')
 
-app.use(cors());
-app.use(express.json());
+
 const allowedOrigins = [
   'http://localhost:3004',
  'https://fe2663e99cb4.ngrok-free.app',
 ];
 
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+const server = http.createServer(app);
+initializeSocket(server, allowedOrigins);
+
+app.use(cors());
+app.use(express.json());
+
+
+app.use("/uploads", express.static(path.join(__dirname, "Uploads")));
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -51,8 +60,9 @@ app.use('/api', payrollRouter);
 app.use('/api', payslipRouter);
 app.use('/api', travelExpensesRouter);
 app.use('/api', performanceRouter);
+app.use('/api', siteVisitRouter);
 
 const port = 3007;
-app.listen(port, () => {
+server.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });

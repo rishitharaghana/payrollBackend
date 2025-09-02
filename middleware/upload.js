@@ -1,30 +1,49 @@
-const multer = require('multer');
-const path = require('path');
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'Uploads/');
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, `${uniqueSuffix}-${file.originalname}`);
-  },
-});
-
-const fileFilter = (req, file, cb) => {
-  const filetypes = /jpeg|jpg|png|pdf/;
-  const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-  const mimetype = filetypes.test(file.mimetype);
-  if (extname && mimetype) {
-    return cb(null, true);
+const createStorage = (uploadDir) => {
+  const fullUploadDir = path.resolve(__dirname, uploadDir);
+  console.log("Resolved upload directory:", fullUploadDir); // Debug log
+  if (!fs.existsSync(fullUploadDir)) {
+    console.log(`Creating upload directory: ${fullUploadDir}`);
+    fs.mkdirSync(fullUploadDir, { recursive: true });
   }
-  cb(new Error('Only images (jpeg, jpg, png) and PDFs are allowed!'));
+  return multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, fullUploadDir);
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      const filename = `${file.fieldname}-${uniqueSuffix}${path.extname(file.originalname)}`;
+      console.log(`Saving file as: ${filename}`); // Debug log
+      cb(null, filename);
+    },
+  });
 };
 
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 }, 
-});
+const createFileFilter = (allowedTypes) => {
+  return (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowedTypes[file.fieldname] && allowedTypes[file.fieldname].includes(ext)) {
+      console.log(`File ${file.originalname} accepted (type: ${ext})`); // Debug log
+      cb(null, true);
+    } else {
+      console.error(`File ${file.originalname} rejected. Allowed types: ${allowedTypes[file.fieldname]?.join(", ") || "none"}`);
+      cb(new Error(`Invalid file type for ${file.fieldname}. Allowed types: ${allowedTypes[file.fieldname]?.join(", ") || "none"}`), false);
+    }
+  };
+};
 
-module.exports = upload;
+const createMulterInstance = (uploadDir, allowedTypes = {}, limits = { fileSize: 5 * 1024 * 1024 }) => {
+  const storage = createStorage(uploadDir);
+  const fileFilter = createFileFilter(allowedTypes);
+
+  return multer({
+    storage,
+    fileFilter,
+    limits,
+  });
+};
+
+module.exports = { createMulterInstance };

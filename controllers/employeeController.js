@@ -1141,6 +1141,7 @@ const getCurrentUserProfile = async (req, res) => {
         mobile: user.mobile,
         emergency_phone:user.emergency_phone,
         designation_name:user.designation_name,
+        department_name:user.department_name,
         blood_group: user.blood_group,
         photo_url: user.photo_url,
       },

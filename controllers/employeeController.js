@@ -957,19 +957,18 @@ const fetchEmployees = async (req, res) => {
     const baseUrl = "http://localhost:3007/uploads/";
     const deptHeads = await queryAsync(
       `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name,blood_group, emergency_phone, 'dept_head' as role,
-              CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
-       FROM dept_heads`,
+          photo_url FROM dept_heads`,
       [baseUrl]
     );
     const managers = await queryAsync(
       `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name,blood_group,emergency_phone, 'manager' as role,
-              CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
+              photo_url
        FROM managers`,
       [baseUrl]
     );
     const employees = await queryAsync(
       `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, blood_group, emergency_phone,'employee' as role,
-              CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
+               photo_url
        FROM employees`,
       [baseUrl]
     );

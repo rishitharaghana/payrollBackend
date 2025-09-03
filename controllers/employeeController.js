@@ -1099,27 +1099,27 @@ const getCurrentUserProfile = async (req, res) => {
     const baseUrl = "http://localhost:3007/uploads/";
     if (userRole === "super_admin") {
       table = "hrms_users";
-      query = `SELECT employee_id, full_name, email, mobile,
+      query = `SELECT employee_id, full_name, email, mobile,emergency_phone,designation_name,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM hrms_users WHERE employee_id = ?`;
     } else if (userRole === "hr") {
       table = "hrs";
-      query = `SELECT employee_id, full_name, email, mobile,
+      query = `SELECT employee_id, full_name, email, mobile,emergency_phone,department_name,designation_name,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM hrs WHERE employee_id = ?`;
     } else if (userRole === "dept_head") {
       table = "dept_heads";
-      query = `SELECT employee_id, full_name, email, mobile,
+      query = `SELECT employee_id, full_name, email, mobile, blood_group,emergency_phone,department_name,designation_name,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM dept_heads WHERE employee_id = ?`;
     } else if (userRole === "manager") {
       table = "managers";
-      query = `SELECT employee_id, full_name, email, mobile,
+      query = `SELECT employee_id, full_name, email, mobile, blood_group,emergency_phone,department_name,designation_name,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM managers WHERE employee_id = ?`;
     } else if (userRole === "employee") {
       table = "employees";
-      query = `SELECT employee_id, full_name, email, mobile,
+      query = `SELECT employee_id, full_name, email, mobile, blood_group, emergency_phone,department_name,designation_name,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM employees WHERE employee_id = ?`;
     } else {
@@ -1139,6 +1139,9 @@ const getCurrentUserProfile = async (req, res) => {
         fullName: user.full_name,
         email: user.email,
         mobile: user.mobile,
+        emergency_phone:user.emergency_phone,
+        designation_name:user.designation_name,
+        blood_group: user.blood_group,
         photo_url: user.photo_url,
       },
     });

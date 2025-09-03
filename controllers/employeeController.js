@@ -967,7 +967,7 @@ const fetchEmployees = async (req, res) => {
       [baseUrl]
     );
     const employees = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, blood_group, emergency_phone,'employee' as role,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name,address, employment_type, basic_salary, allowances, join_date, blood_group, emergency_phone,'employee' as role,
                photo_url
        FROM employees`,
       [baseUrl]

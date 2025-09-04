@@ -1136,7 +1136,7 @@ const getCurrentUserProfile = async (req, res) => {
       message: "User profile fetched successfully",
       data: {
         employee_id: user.employee_id,
-        fullName: user.full_name,
+        full_name: user.full_name,
         email: user.email,
         mobile: user.mobile,
         emergency_phone:user.emergency_phone,

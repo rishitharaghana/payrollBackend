@@ -5,7 +5,6 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 const { allocateMonthlyLeaves } = require('../controllers/leaveController');
 const { processSiteVisitPayroll } = require('../controllers/siteVisitController');
 
-// Monthly leave allocation at midnight on the 1st of each month
 cron.schedule(
   '0 0 1 * *',
   async () => {
@@ -22,7 +21,6 @@ cron.schedule(
   }
 );
 
-// Daily payroll processing for site visits at midnight
 cron.schedule(
   '0 0 * * *',
   async () => {

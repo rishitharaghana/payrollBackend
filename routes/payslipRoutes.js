@@ -4,6 +4,6 @@ const { generatePayslip, getPayslips } = require('../controllers/payslipControll
 const router = express.Router();
 
 router.get  ('/payslip/:employeeId/:month', authenticateToken, generatePayslip);
-router.get('/payslips', authenticateToken, getPayslips);
+router.get('/employees/payslips', authenticateToken, getPayslips);
 
 module.exports = router;

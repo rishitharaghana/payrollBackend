@@ -1,147 +1,310 @@
-const pool = require('../config/db');
-const util = require('util');
-const PDFDocument = require('pdfkit');
-
+const PDFDocument = require("pdfkit-table");
+const pool = require("../config/db");
+const util = require("util");
+const path = require("path");
+const fs = require("fs");
 const queryAsync = util.promisify(pool.query).bind(pool);
-  
+
+const formatCurrency = (value) => {
+  const numValue = parseFloat(value) || 0;
+  return `₹${numValue.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+};
+
 const validateInput = (employeeId, month) => {
-  if (!/^\d+$/.test(employeeId)) {
-    throw new Error('Invalid employee ID');
+  if (!employeeId) {
+    throw new Error("Invalid employee ID");
   }
-  if (!/^\d{4}-\d{2}$/.test(month) && !/^[A-Za-z]+ \d{4}$/.test(month)) {
-    throw new Error('Invalid month format. Use YYYY-MM or "Month YYYY"');
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    throw new Error("Invalid month format. Use YYYY-MM");
   }
   return true;
 };
-const formatCurrency = (value) => {
-  return `₹${(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-};
+
 const generatePayslip = async (req, res) => {
+  const { employeeId, month } = req.params;
+  const { role, employee_id } = req.user;
+
+  console.log("User data:", req.user); // Debug
+
   try {
-    const { employeeId, month } = req.params;
     validateInput(employeeId, month);
+
+    // Restrict employees to their own payslips
+    if (role === "employee" && employeeId !== employee_id) {
+      return res.status(403).json({ error: "Access denied: You can only view your own payslip" });
+    }
+
+    // Allow super_admin, hr, and employees to access payslips
+    if (!["super_admin", "hr", "employee"].includes(role)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
 
     const query = `
       SELECT 
         p.employee_id, p.month, p.gross_salary, p.net_salary, p.pf_deduction, 
         p.esic_deduction, p.tax_deduction, p.professional_tax, p.basic_salary, 
-        p.hra, p.da, p.other_allowances, p.status, p.payment_method, p.payment_date, 
-        p.created_by, e.employee_name, COALESCE(e.department_name, 'HR') AS department, 
-        e.designation_name AS position, e.pan_number, e.uan_number, 
-        b.bank_account_number, b.ifsc_code, c.company_name, c.company_pan, c.company_gstin
+        p.hra, p.da, p.other_allowances, p.payment_method, p.payment_date, 
+        p.created_by, e.full_name AS employee_name, COALESCE(e.department_name, 'HR') AS department, 
+        e.designation_name, pd.pan_number, pd.uan_number, 
+        b.bank_account_number, b.ifsc_number AS ifsc_code, c.company_name, c.company_pan, c.company_gstin, c.address
       FROM payroll p
       JOIN (
-        SELECT employee_id, full_name AS employee_name, department_name, designation_name, pan_number, uan_number 
+        SELECT employee_id, full_name, department_name, designation_name 
         FROM employees 
         UNION 
-        SELECT employee_id, full_name, NULL, NULL, NULL, NULL 
+        SELECT employee_id, full_name, NULL, NULL 
         FROM hrs 
         UNION 
-        SELECT employee_id, full_name, department_name, designation_name, NULL, NULL 
+        SELECT employee_id, full_name, department_name, designation_name 
         FROM dept_heads 
         UNION 
-        SELECT employee_id, full_name, department_name, designation_name, NULL, NULL 
+        SELECT employee_id, full_name, department_name, designation_name 
         FROM managers
       ) e ON p.employee_id = e.employee_id
+      LEFT JOIN personal_details pd ON p.employee_id = pd.employee_id
       LEFT JOIN bank_details b ON p.employee_id = b.employee_id
       JOIN company c ON p.company_id = c.company_id
-      WHERE p.employee_id = ? AND p.month = ? AND p.status = 'Approved'
+      WHERE p.employee_id = ? AND p.month = ?
     `;
     const rows = await queryAsync(query, [employeeId, month]);
+    console.log("Payslip data:", rows); // Debug
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'No approved payslip found for the specified employee and month' });
+      return res.status(404).json({ error: `No payroll record found for employee ${employeeId} in ${month}` });
     }
 
     const employee = rows[0];
 
-    const doc = new PDFDocument({ margin: 50 });
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=payslip_${employee.employee_id}_${month}.pdf`);
-
+    const doc = new PDFDocument({ margin: 40, size: "A4" });
+    const fileName = `Payslip_${employee.employee_id}_${month}.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
     doc.pipe(res);
 
-    doc.image('public/images/company_logo.png', 50, 30, { width: 100 }).moveDown(2);
-    doc.fontSize(20).font('Helvetica-Bold').text('MNTechs Solutions Pvt Ltd', { align: 'center' });
-    doc.fontSize(12).font('Helvetica').text('123 Business Street, City, Country', { align: 'center' });
-    doc.text(`PAN: ${employee.company_pan} | GSTIN: ${employee.company_gstin}`, { align: 'center' });
-    doc.moveDown(1).fontSize(16).text(`Payslip for ${month}`, { align: 'center' }).moveDown(1);
+    // Watermark
+    doc
+      .fontSize(50)
+      .font("Helvetica")
+      .opacity(0.1)
+      .text("CONFIDENTIAL", 100, 300, { align: "center", rotate: 45 });
 
-    doc.rect(40, 20, 520, 750).stroke();
+    // Company Header
+    const logoPath = path.join(__dirname, "../public/images/company_logo.png");
+    if (fs.existsSync(logoPath)) {
+      doc.image(logoPath, 40, 30, { width: 80 });
+    } else {
+      console.warn("Logo file not found:", logoPath);
+      doc.fontSize(10).text("Logo Unavailable", 40, 30);
+    }
+    doc
+      .fontSize(16)
+      .font("Helvetica-Bold")
+      .opacity(1)
+      .text(employee.company_name || "MNTechs Solutions Pvt Ltd", 130, 30);
+    doc
+      .fontSize(10)
+      .font("Helvetica")
+      .text(employee.address || "123 Business Street, City, Country", 130, 50);
+    doc
+      .fontSize(10)
+      .text(`PAN: ${employee.company_pan || "ABCDE1234F"} | GSTIN: ${employee.company_gstin || "12ABCDE1234F1Z5"}`, 130, 65);
+    doc
+      .fontSize(14)
+      .font("Helvetica-Bold")
+      .text(`Payslip for ${month}`, 0, 100, { align: "center" });
+    doc.moveDown(2);
 
-    doc.fontSize(14).font('Helvetica-Bold').text('Employee Details', { underline: true });
-    doc.fontSize(12).font('Helvetica');
-    doc.text(`Name: ${employee.employee_name}`);
-    doc.text(`Employee ID: ${employee.employee_id}`);
-    doc.text(`Department: ${employee.department}`);
-    doc.text(`Position: ${employee.position || '-'}`);
-    doc.text(`PAN: ${employee.pan_number || '-'}`);
-    doc.text(`UAN: ${employee.uan_number || '-'}`);
-    doc.text(`Bank A/C: ${employee.bank_account_number || '-'}`);
-    doc.text(`IFSC: ${employee.ifsc_code || '-'}`);
-    doc.text(`Pay Period: ${month}`);
-    doc.moveDown(1);
+    // Employee Details Table
+    const employeeTable = {
+      headers: [
+        { label: "Field", property: "field", width: 200, align: "left" },
+        { label: "Value", property: "value", width: 300, align: "left" },
+      ],
+      rows: [
+        ["Name", employee.employee_name || "-"],
+        ["Employee ID", employee.employee_id || "-"],
+        ["Department", employee.department || "HR"],
+        ["Designation", employee.designation_name || "-"],
+        ["PAN", employee.pan_number || "-"],
+        ["UAN", employee.uan_number || "-"],
+        ["Bank A/C", employee.bank_account_number || "-"],
+        ["IFSC", employee.ifsc_code || "-"],
+        ["Pay Period", employee.month || "-"],
+        ["Payment Date", employee.payment_date ? new Date(employee.payment_date).toLocaleDateString("en-IN") : "-"],
+        ["Payment Method", employee.payment_method || "-"],
+      ],
+    };
 
-    doc.fontSize(14).font('Helvetica-Bold').text('Earnings', { underline: true });
-    const earnings = [
-      ['Basic Salary', formatCurrency(employee.basic_salary)],
-      ['House Rent Allowance (HRA)', formatCurrency(employee.hra)],
-      ['Dearness Allowance (DA)', formatCurrency(employee.da)],
-      ['Other Allowances', formatCurrency(employee.other_allowances)],
-      ['Gross Salary', formatCurrency(employee.gross_salary)],
-    ];
-    earnings.forEach((row, index) => {
-      doc.fontSize(12).font(index === earnings.length - 1 ? 'Helvetica-Bold' : 'Helvetica')
-        .text(`${row[0]}: ${row[1]}`, 50, doc.y + index * 20);
-    });
-    doc.moveDown(1);
-
-    doc.fontSize(14).font('Helvetica-Bold').text('Deductions', { underline: true });
-    const deductions = [
-      ['Provident Fund (PF)', formatCurrency(employee.pf_deduction)],
-      ['ESIC', formatCurrency(employee.esic_deduction)],
-      ['Professional Tax', formatCurrency(employee.professional_tax)],
-      ['Income Tax', formatCurrency(employee.tax_deduction)],
-      ['Net Salary', formatCurrency(employee.net_salary)],
-    ];
-    deductions.forEach((row, index) => {
-      doc.fontSize(12).font(index === deductions.length - 1 ? 'Helvetica-Bold' : 'Helvetica')
-        .text(`${row[0]}: ${row[1]}`, 50, doc.y + index * 20);
-    });
-    doc.moveDown(1);
-
-    doc.fontSize(12).font('Helvetica');
-    doc.text(`Status: ${employee.status}`);
-    doc.text(`Payment Method: ${employee.payment_method}`);
-    doc.text(`Payment Date: ${new Date(employee.payment_date).toLocaleDateString('en-IN')}`);
-    doc.text(`Generated By: ${employee.created_by}`);
+    console.log("Employee table data:", employeeTable);
+    try {
+      await doc.table(employeeTable, {
+        prepareHeader: () => doc.font("Helvetica-Bold").fontSize(10),
+        prepareRow: (row, indexColumn, indexRow) => {
+          doc.font("Helvetica").fontSize(10);
+          console.log(`Rendering employee table row ${indexRow}:`, row);
+        },
+        padding: 5,
+        columnSpacing: 5,
+        hideHeader: false,
+        minRowHeight: 20,
+      });
+    } catch (err) {
+      console.error("Employee table rendering error:", err.message);
+      throw new Error("Failed to render employee table");
+    }
 
     doc.moveDown(2);
-    doc.fontSize(10).text(
-      'This is a computer-generated payslip and does not require a signature. ' +
-      'Complies with Payment of Wages Act, 1936, and other applicable laws.',
-      { align: 'center' }
-    );
+
+    // Earnings and Deductions Tables (Side by Side)
+    const tableWidth = 250;
+    const tableX = 40;
+    const tableX2 = tableX + tableWidth + 20;
+
+    // Earnings Table
+    doc.fontSize(12).font("Helvetica-Bold").text("Earnings", tableX, doc.y, { underline: true });
+    const earningsTable = {
+      headers: [
+        { label: "Description", property: "description", width: 150, align: "left" },
+        { label: "Amount", property: "amount", width: 100, align: "right" },
+      ],
+      rows: [
+        ["Basic Salary", formatCurrency(parseFloat(employee.basic_salary))],
+        ["House Rent Allowance (HRA)", formatCurrency(parseFloat(employee.hra))],
+        ["Dearness Allowance (DA)", formatCurrency(parseFloat(employee.da))],
+        ["Other Allowances", formatCurrency(parseFloat(employee.other_allowances))],
+        ["Gross Salary", formatCurrency(parseFloat(employee.gross_salary))],
+      ],
+    };
+
+    console.log("Earnings table data:", earningsTable);
+    try {
+      await doc.table(earningsTable, {
+        x: tableX,
+        width: tableWidth,
+        prepareHeader: () => doc.font("Helvetica-Bold").fontSize(10),
+        prepareRow: (row, indexColumn, indexRow) => {
+          doc.font("Helvetica").fontSize(10);
+          console.log(`Rendering earnings table row ${indexRow}:`, row);
+        },
+        padding: 5,
+        columnSpacing: 5,
+        hideHeader: false,
+        minRowHeight: 20,
+      });
+    } catch (err) {
+      console.error("Earnings table rendering error:", err.message);
+      throw new Error("Failed to render earnings table");
+    }
+
+    // Deductions Table
+    doc.fontSize(12).font("Helvetica-Bold").text("Deductions", tableX2, earningsTable.y || doc.y, { underline: true });
+    const deductionsTable = {
+      headers: [
+        { label: "Description", property: "description", width: 150, align: "left" },
+        { label: "Amount", property: "amount", width: 100, align: "right" },
+      ],
+      rows: [
+        ["Provident Fund (PF)", formatCurrency(parseFloat(employee.pf_deduction))],
+        ["ESIC", formatCurrency(parseFloat(employee.esic_deduction))],
+        ["Professional Tax", formatCurrency(parseFloat(employee.professional_tax))],
+        ["Income Tax", formatCurrency(parseFloat(employee.tax_deduction))],
+        ["Net Salary", formatCurrency(parseFloat(employee.net_salary))],
+      ],
+    };
+
+    console.log("Deductions table data:", deductionsTable);
+    try {
+      await doc.table(deductionsTable, {
+        x: tableX2,
+        width: tableWidth,
+        prepareHeader: () => doc.font("Helvetica-Bold").fontSize(10),
+        prepareRow: (row, indexColumn, indexRow) => {
+          doc.font("Helvetica").fontSize(10);
+          console.log(`Rendering deductions table row ${indexRow}:`, row);
+        },
+        padding: 5,
+        columnSpacing: 5,
+        hideHeader: false,
+        minRowHeight: 20,
+      });
+    } catch (err) {
+      console.error("Deductions table rendering error:", err.message);
+      throw new Error("Failed to render deductions table");
+    }
+
+    // Footer
+    doc.moveDown(2);
+    doc
+      .fontSize(10)
+      .font("Helvetica")
+      .text(`Generated by: ${req.user?.employee_id || "Admin"}`, 40, doc.y);
+    doc
+      .fontSize(10)
+      .text(
+        "This is a computer-generated payslip and does not require a signature unless specified.",
+        40,
+        doc.y + 15,
+        { align: "center" }
+      );
+    const signaturePath = path.join(__dirname, "../public/images/hr_signature.png");
+    if (fs.existsSync(signaturePath)) {
+      doc.image(signaturePath, 400, doc.y + 20, { width: 100 });
+    } else {
+      console.warn("Signature file not found:", signaturePath);
+      doc
+        .fontSize(10)
+        .font("Helvetica-Bold")
+        .text("HR Signature: ___________________________", 400, doc.y + 20, { align: "right" });
+    }
 
     doc.end();
   } catch (error) {
-    console.error(`Error generating payslip for employee ${employeeId}, month ${month}: ${error.message}`);
-    res.status(error.message.includes('Invalid') ? 400 : 500).json({ message: 'Error generating payslip PDF' });
+    console.error(`Error generating payslip for employee ${employeeId}, month ${month}:`, error.message, error.sqlMessage);
+    res.status(error.message.includes("Invalid") ? 400 : 500).json({
+      error: "Error generating payslip PDF",
+      details: error.message,
+    });
   }
 };
 
 const getPayslips = async (req, res) => {
+  const { role, employee_id } = req.user;
+
   try {
-    const query = `
-      SELECT p.employee_id, p.month, e.employee_name as employee, e.department, e.position, p.net_salary as salary
+    let query = `
+      SELECT p.employee_id, p.month, e.full_name as employee, COALESCE(e.department_name, 'HR') as department, 
+             e.designation_name, p.net_salary as salary,
+             p.basic_salary, p.hra, p.da, p.other_allowances, p.pf_deduction, 
+             p.esic_deduction, p.tax_deduction, p.professional_tax
       FROM payroll p
-      JOIN employees e ON p.employee_id = e.employee_id
+      JOIN (
+        SELECT employee_id, full_name, department_name, designation_name FROM employees
+        UNION
+        SELECT employee_id, full_name, NULL, NULL FROM hrs
+        UNION
+        SELECT employee_id, full_name, department_name, designation_name FROM dept_heads
+        UNION
+        SELECT employee_id, full_name, department_name, designation_name FROM managers
+      ) e ON p.employee_id = e.employee_id
     `;
-    const payslips = await queryAsync(query);
-    res.json(payslips);
+    let params = [];
+
+    if (role === "employee") {
+      query += " WHERE p.employee_id = ?";
+      params.push(employee_id);
+    } else if (!["super_admin", "hr"].includes(role)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const payslips = await queryAsync(query, params);
+    console.log("Fetched payslips:", payslips);
+    res.json({ message: "Payslips fetched successfully", data: payslips });
   } catch (error) {
-    console.error(`Error fetching payslips: ${error.message}`);
-    res.status(500).json({ message: 'Error fetching payslips' });
+    console.error(`Error fetching payslips:`, error.message, error.sqlMessage);
+    res.status(500).json({ error: "Error fetching payslips", details: error.message });
   }
 };
 

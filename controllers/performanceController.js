@@ -56,57 +56,113 @@ const fetchEmployeePerformance = async (req, res) => {
   const userRole = req.user.role;
   const userEmployeeId = req.user.employee_id;
 
+  console.log("fetchEmployeePerformance - Request received:", {
+    employee_id,
+    userRole,
+    userEmployeeId,
+  });
+
   if (!employee_id) {
+    console.log("fetchEmployeePerformance - Error: Employee ID is required");
     return res.status(400).json({ error: "Employee ID is required" });
   }
 
-  if (!["super_admin", "hr", "dept_head", "employee"].includes(userRole) || (userRole === "employee" && userEmployeeId !== employee_id)) {
+  if (
+    !["super_admin", "hr", "dept_head", "employee"].includes(userRole) ||
+    (userRole === "employee" && userEmployeeId !== employee_id)
+  ) {
+    console.log("fetchEmployeePerformance - Error: Access denied", {
+      userRole,
+      userEmployeeId,
+      employee_id,
+    });
     return res.status(403).json({ error: "Access denied" });
   }
 
   try {
-    const [employee] = await queryAsync("SELECT employee_id FROM hrms_users WHERE employee_id = ?", [employee_id]);
+    console.log("fetchEmployeePerformance - Querying employee:", { employee_id });
+    const [employee] = await queryAsync(
+      "SELECT employee_id FROM hrms_users WHERE employee_id = ?",
+      [employee_id]
+    );
+
     if (!employee) {
-      return res.status(404).json({ error: "Employee not found" });
+      console.log("fetchEmployeePerformance - Employee not found:", { employee_id });
+      return res.status(404).json({
+        message: "Employee not found",
+        data: {
+          goals: [],
+          tasks: [],
+          competencies: [],
+          achievements: [],
+          feedback: [],
+          learningGrowth: [],
+        },
+      });
     }
 
-    const goals = await queryAsync(
+    console.log("fetchEmployeePerformance - Fetching goals for:", { employee_id });
+    const [goals] = await queryAsync(
       "SELECT id, title, description, due_date, progress, status FROM goals WHERE employee_id = ?",
       [employee_id]
     );
 
-    const tasks = await queryAsync(
+    console.log("fetchEmployeePerformance - Fetching tasks for:", { employee_id });
+    const [tasks] = await queryAsync(
       "SELECT id, goal_id, title, description, due_date, priority, progress, status FROM tasks WHERE employee_id = ?",
       [employee_id]
     );
 
-    const competencies = await queryAsync(
+    console.log("fetchEmployeePerformance - Fetching competencies for:", { employee_id });
+    const [competencies] = await queryAsync(
       "SELECT skill, self_rating, manager_rating, feedback FROM competencies WHERE employee_id = ?",
       [employee_id]
     );
 
-    const achievements = await queryAsync(
+    console.log("fetchEmployeePerformance - Fetching achievements for:", { employee_id });
+    const [achievements] = await queryAsync(
       "SELECT title, date, type FROM achievements WHERE employee_id = ?",
       [employee_id]
     );
 
-    const feedback = await queryAsync(
+    console.log("fetchEmployeePerformance - Fetching feedback for:", { employee_id });
+    const [feedback] = await queryAsync(
       "SELECT source, comment, timestamp FROM feedback WHERE employee_id = ?",
       [employee_id]
     );
 
-    const learningGrowth = await queryAsync(
+    console.log("fetchEmployeePerformance - Fetching learningGrowth for:", { employee_id });
+    const [learningGrowth] = await queryAsync(
       "SELECT title, progress, completed FROM learning_growth WHERE employee_id = ?",
       [employee_id]
     );
 
-    res.json({
+    console.log("fetchEmployeePerformance - Fetched data:", {
+      goals: goals || [],
+      tasks: tasks || [],
+      competencies: competencies || [],
+      achievements: achievements || [],
+      feedback: feedback || [],
+      learningGrowth: learningGrowth || [],
+    });
+
+    return res.status(200).json({
       message: "Performance data fetched successfully",
-      data: { goals, tasks, competencies, achievements, feedback, learningGrowth },
+      data: {
+        goals: goals || [],
+        tasks: tasks || [],
+        competencies: competencies || [],
+        achievements: achievements || [],
+        feedback: feedback || [],
+        learningGrowth: learningGrowth || [],
+      },
     });
   } catch (err) {
-    console.error("DB error:", err);
-    res.status(500).json({ error: `Database error: ${err.message}` });
+    console.error("fetchEmployeePerformance - Database error:", {
+      error: err.message,
+      employee_id,
+    });
+    return res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 

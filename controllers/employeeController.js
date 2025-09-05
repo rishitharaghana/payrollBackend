@@ -66,8 +66,8 @@ const createEmployee = async (req, res) => {
         .json({ error: `File upload error: ${err.message}` });
     }
 
-    console.log("Request body:", req.body); // Debug log
-    console.log("Request files:", req.files); // Debug log
+    console.log("Request body:", req.body);
+    console.log("Request files:", req.files);
 
     const userRole = req.user.role;
     const {
@@ -85,10 +85,13 @@ const createEmployee = async (req, res) => {
       join_date,
       role = "employee",
       blood_group,
+      dob,
+      gender,
       password = "defaultPass123",
     } = req.body;
     const photo = req.files?.["photo"]?.[0];
 
+    // Validation
     if (!photo) {
       console.error("No photo uploaded");
       return res.status(400).json({ error: "Photo is required" });
@@ -114,11 +117,21 @@ const createEmployee = async (req, res) => {
     }
 
     if (emergency_phone && emergency_phone.trim() === mobile.trim()) {
-      return res
-        .status(400)
-        .json({
-          error: "Mobile and emergency contact numbers cannot be the same",
-        });
+      return res.status(400).json({
+        error: "Mobile and emergency contact numbers cannot be the same",
+      });
+    }
+
+    if (dob && isNaN(Date.parse(dob))) {
+      return res.status(400).json({ error: "Invalid date of birth" });
+    }
+
+    if (join_date && isNaN(Date.parse(join_date))) {
+      return res.status(400).json({ error: "Invalid join date" });
+    }
+
+    if (["employee", "manager"].includes(role) && !join_date) {
+      return res.status(400).json({ error: "Join date is required for this role" });
     }
 
     const validBloodGroups = [
@@ -133,6 +146,11 @@ const createEmployee = async (req, res) => {
     ];
     if (blood_group && !validBloodGroups.includes(blood_group)) {
       return res.status(400).json({ error: "Invalid blood group" });
+    }
+
+    const validGenders = ["Male", "Female", "Others"];
+    if (gender && !validGenders.includes(gender)) {
+      return res.status(400).json({ error: "Invalid gender" });
     }
 
     const table =
@@ -214,11 +232,13 @@ const createEmployee = async (req, res) => {
       const photo_url = photo ? `${baseUrl}${path.basename(photo.path)}` : null;
 
       console.log("Generated photo_url:", photo_url);
+      console.log("DOB value before insertion:", dob);
+      console.log("Join date before insertion:", join_date);
 
       let query, values;
       if (role === "hr") {
-        query = `INSERT INTO hrs (employee_id, full_name, email, mobile, password, is_temporary_password, basic_salary, allowances, bonuses, blood_group, photo_url)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        query = `INSERT INTO hrs (employee_id, full_name, email, mobile, password, is_temporary_password, basic_salary, allowances, bonuses, blood_group, dob, gender, join_date, photo_url)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         values = [
           employeeId,
           name,
@@ -230,11 +250,14 @@ const createEmployee = async (req, res) => {
           allowances || 0,
           bonuses || 0,
           blood_group || null,
+          dob || null,
+          gender || null,
+          join_date || null,
           photo_url,
         ];
       } else if (role === "dept_head") {
-        query = `INSERT INTO dept_heads (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password, basic_salary, allowances, bonuses, blood_group, photo_url)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        query = `INSERT INTO dept_heads (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password, basic_salary, allowances, bonuses, blood_group, dob, gender, join_date, photo_url)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         values = [
           employeeId,
           name,
@@ -248,11 +271,14 @@ const createEmployee = async (req, res) => {
           allowances || 0,
           bonuses || 0,
           blood_group || null,
+          dob || null,
+          gender || null,
+          join_date || null,
           photo_url,
         ];
       } else if (role === "manager") {
-        query = `INSERT INTO managers (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password, basic_salary, allowances, bonuses, blood_group, photo_url)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        query = `INSERT INTO managers (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password, basic_salary, allowances, bonuses, blood_group, dob, gender, join_date, photo_url)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         values = [
           employeeId,
           name,
@@ -266,11 +292,14 @@ const createEmployee = async (req, res) => {
           allowances || 0,
           bonuses || 0,
           blood_group || null,
+          dob || null,
+          gender || null,
+          join_date || null,
           photo_url,
         ];
       } else {
-        query = `INSERT INTO employees (employee_id, full_name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, bonuses, join_date, is_temporary_password, blood_group, photo_url)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        query = `INSERT INTO employees (employee_id, full_name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, bonuses, join_date, is_temporary_password, blood_group, dob, gender, photo_url)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         values = [
           employeeId,
           name,
@@ -285,15 +314,29 @@ const createEmployee = async (req, res) => {
           basic_salary || 0,
           allowances || 0,
           bonuses || 0,
-          join_date,
+          join_date || null,
           true,
           blood_group || null,
+          dob || null,
+          gender || null,
           photo_url,
         ];
       }
 
+      console.log("Insert query:", query);
+      console.log("Insert values:", values);
+
       const result = await queryAsync(query, values);
-      console.log("Database insert result:", result); // Debug log
+      console.log("Database insert result:", result);
+
+      // Fetch the inserted record to verify DOB and join_date
+      const [insertedRecord] = await queryAsync(
+        `SELECT dob, join_date FROM ${table} WHERE employee_id = ?`,
+        [employeeId]
+      );
+      console.log("Inserted record DOB:", insertedRecord?.dob);
+      console.log("Inserted record join_date:", insertedRecord?.join_date);
+
       res.status(201).json({
         message: `${role} created successfully`,
         data: {
@@ -307,7 +350,10 @@ const createEmployee = async (req, res) => {
           basic_salary,
           allowances,
           bonuses,
-          blood_group,
+          blood_group: blood_group || null,
+          dob: insertedRecord?.dob || null,
+          gender: gender || null,
+          join_date: insertedRecord?.join_date || null,
           photo_url,
           ...(role === "dept_head" || role === "manager"
             ? { department_name, designation_name }
@@ -334,28 +380,23 @@ const updateEmployee = async (req, res) => {
 
     const userRole = req.user.role;
     const { id } = req.params;
-    const { name, email, mobile, emergency_phone, address, role, blood_group } =
+    const { name, email, mobile, emergency_phone, address, role, blood_group, gender } =
       req.body;
     const photo = req.files?.["photo"]?.[0];
 
     if (!["super_admin", "hr"].includes(userRole) && userRole !== role) {
-      return res
-        .status(403)
-        .json({
-          error:
-            "Access denied: Insufficient permissions to update this record",
-        });
+      return res.status(403).json({
+        error: "Access denied: Insufficient permissions to update this record",
+      });
     }
     if (userRole === "hr" && role === "hr") {
       return res.status(403).json({ error: "HR cannot update HR accounts" });
     }
 
     if (!name?.trim() || !email?.trim() || !mobile?.trim() || !role) {
-      return res
-        .status(400)
-        .json({
-          error: "Name, email, mobile, and role are required for update",
-        });
+      return res.status(400).json({
+        error: "Name, email, mobile, and role are required for update",
+      });
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -363,11 +404,9 @@ const updateEmployee = async (req, res) => {
     }
 
     if (emergency_phone && emergency_phone.trim() === mobile.trim()) {
-      return res
-        .status(400)
-        .json({
-          error: "Mobile and emergency contact numbers cannot be the same",
-        });
+      return res.status(400).json({
+        error: "Mobile and emergency contact numbers cannot be the same",
+      });
     }
 
     const validBloodGroups = [
@@ -382,6 +421,11 @@ const updateEmployee = async (req, res) => {
     ];
     if (blood_group && !validBloodGroups.includes(blood_group)) {
       return res.status(400).json({ error: "Invalid blood group" });
+    }
+
+    const validGenders = ["Male", "Female", "Others"];
+    if (gender && !validGenders.includes(gender)) {
+      return res.status(400).json({ error: "Invalid gender" });
     }
 
     const table =
@@ -441,14 +485,14 @@ const updateEmployee = async (req, res) => {
         return res.status(400).json({ error: "Mobile number already in use" });
       }
 
-      const baseUrl = "http://locahhost:3007/uploads/";
+      const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/"; // Fixed typo in baseUrl
       const photo_url = photo
         ? `${baseUrl}${path.basename(photo.path)}`
         : req.body.photo === "null"
         ? null
         : existingRecord.photo_url;
 
-      const query = `UPDATE ${table} SET full_name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, blood_group = ?, photo_url = ? WHERE id = ?`;
+      const query = `UPDATE ${table} SET full_name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, blood_group = ?, gender = ?, photo_url = ? WHERE id = ?`;
       const values = [
         name,
         email,
@@ -456,6 +500,7 @@ const updateEmployee = async (req, res) => {
         emergency_phone || null,
         address || null,
         blood_group || null,
+        gender || null, // Add gender
         photo_url,
         id,
       ];
@@ -478,6 +523,7 @@ const updateEmployee = async (req, res) => {
           emergency_phone,
           address,
           blood_group,
+          gender, // Include gender in response
           photo_url,
         },
       });
@@ -512,11 +558,9 @@ const createEmployeePersonalDetails = async (req, res) => {
   } = req.body;
 
   if (!["super_admin", "hr"].includes(userRole) && employeeId !== userId) {
-    return res
-      .status(403)
-      .json({
-        error: "Access denied: You can only add your own personal details",
-      });
+    return res.status(403).json({
+      error: "Access denied: You can only add your own personal details",
+    });
   }
 
   if (
@@ -526,11 +570,9 @@ const createEmployeePersonalDetails = async (req, res) => {
     !gender ||
     !employeeId
   ) {
-    return res
-      .status(400)
-      .json({
-        error: "Full name, email, phone, gender, and employee ID are required",
-      });
+    return res.status(400).json({
+      error: "Full name, email, phone, gender, and employee ID are required",
+    });
   }
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -556,11 +598,9 @@ const createEmployeePersonalDetails = async (req, res) => {
         email !== employee.email ||
         phone !== employee.mobile)
     ) {
-      return res
-        .status(400)
-        .json({
-          error: "Full name, email, and phone must match your employee record",
-        });
+      return res.status(400).json({
+        error: "Full name, email, and phone must match your employee record",
+      });
     }
 
     const [existingDetails] = await queryAsync(
@@ -723,11 +763,9 @@ const createEducationDetails = async (req, res) => {
       .json({ error: "Access denied: Insufficient permissions" });
   }
   if (userRole === "employee" && normalizedBodyId !== normalizedUserId) {
-    return res
-      .status(403)
-      .json({
-        error: "Access denied: You can only add your own education details",
-      });
+    return res.status(403).json({
+      error: "Access denied: You can only add your own education details",
+    });
   }
 
   const numericFields = [
@@ -899,11 +937,9 @@ const createBankDetails = async (req, res) => {
   }
 
   if (!employeeId || !bankAccountNumber || !ifscCode) {
-    return res
-      .status(400)
-      .json({
-        error: "Employee ID, bank account number, and IFSC code are required",
-      });
+    return res.status(400).json({
+      error: "Employee ID, bank account number, and IFSC code are required",
+    });
   }
 
   if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode)) {
@@ -954,22 +990,20 @@ const fetchEmployees = async (req, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const baseUrl = "http://localhost:3007/uploads/";
+    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     const deptHeads = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name,blood_group, emergency_phone, 'dept_head' as role,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, blood_group, gender, emergency_phone, 'dept_head' as role,
           photo_url FROM dept_heads`,
       [baseUrl]
     );
     const managers = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name,blood_group,emergency_phone, 'manager' as role,
-              photo_url
-       FROM managers`,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, blood_group, gender, emergency_phone, join_date, 'manager' as role,
+          photo_url FROM managers`,
       [baseUrl]
     );
     const employees = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name,address, employment_type, basic_salary, allowances, join_date, blood_group, emergency_phone,'employee' as role,
-               photo_url
-       FROM employees`,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, basic_salary, allowances, join_date, blood_group, gender, emergency_phone, 'employee' as role,
+          photo_url FROM employees`,
       [baseUrl]
     );
 
@@ -992,13 +1026,13 @@ const getEmployeeById = async (req, res) => {
   }
 
   try {
-    const baseUrl = "http://localhost:3007/uploads/";
+    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     const tables = ["employees", "hrs", "dept_heads", "managers"];
     let employee = null;
 
     for (const table of tables) {
       const [result] = await queryAsync(
-        `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, blood_group, 
+        `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, blood_group, gender,
                 CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url,
                 ? as role
          FROM ${table} WHERE id = ?`,
@@ -1027,11 +1061,9 @@ const deleteEmployee = async (req, res) => {
   const { role } = req.body;
 
   if (!["super_admin", "hr"].includes(userRole)) {
-    return res
-      .status(403)
-      .json({
-        error: "Access denied: Insufficient permissions to delete this record",
-      });
+    return res.status(403).json({
+      error: "Access denied: Insufficient permissions to delete this record",
+    });
   }
   if (userRole === "hr" && role === "hr") {
     return res.status(403).json({ error: "HR cannot delete HR accounts" });
@@ -1067,12 +1099,10 @@ const deleteEmployee = async (req, res) => {
         [id]
       );
       if (payrollCheck.length > 0) {
-        return res
-          .status(400)
-          .json({
-            error:
-              "Cannot delete employee with existing payroll records. Archive or resolve dependencies first.",
-          });
+        return res.status(400).json({
+          error:
+            "Cannot delete employee with existing payroll records. Archive or resolve dependencies first.",
+        });
       }
     }
 
@@ -1096,30 +1126,30 @@ const getCurrentUserProfile = async (req, res) => {
 
   try {
     let query, table;
-    const baseUrl = "http://localhost:3007/uploads/";
+    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     if (userRole === "super_admin") {
       table = "hrms_users";
-      query = `SELECT employee_id, full_name, email, mobile,emergency_phone,designation_name,
+      query = `SELECT employee_id, full_name, email, mobile, emergency_phone, designation_name, gender,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM hrms_users WHERE employee_id = ?`;
     } else if (userRole === "hr") {
       table = "hrs";
-      query = `SELECT employee_id, full_name, email, mobile,emergency_phone,department_name,designation_name,
+      query = `SELECT employee_id, full_name, email, mobile, emergency_phone, department_name, designation_name, blood_group, gender,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM hrs WHERE employee_id = ?`;
     } else if (userRole === "dept_head") {
       table = "dept_heads";
-      query = `SELECT employee_id, full_name, email, mobile, blood_group,emergency_phone,department_name,designation_name,
+      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM dept_heads WHERE employee_id = ?`;
     } else if (userRole === "manager") {
       table = "managers";
-      query = `SELECT employee_id, full_name, email, mobile, blood_group,emergency_phone,department_name,designation_name,
+      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM managers WHERE employee_id = ?`;
     } else if (userRole === "employee") {
       table = "employees";
-      query = `SELECT employee_id, full_name, email, mobile, blood_group, emergency_phone,department_name,designation_name,
+      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM employees WHERE employee_id = ?`;
     } else {
@@ -1139,10 +1169,11 @@ const getCurrentUserProfile = async (req, res) => {
         full_name: user.full_name,
         email: user.email,
         mobile: user.mobile,
-        emergency_phone:user.emergency_phone,
-        designation_name:user.designation_name,
-        department_name:user.department_name,
+        emergency_phone: user.emergency_phone,
+        designation_name: user.designation_name,
+        department_name: user.department_name,
         blood_group: user.blood_group,
+        gender: user.gender, // Include gender
         photo_url: user.photo_url,
       },
     });
@@ -1202,7 +1233,9 @@ const getEmployeePersonalDetails = async (req, res) => {
   const { employeeId } = req.params;
 
   if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+    return res
+      .status(403)
+      .json({ error: "Access denied: Insufficient permissions" });
   }
 
   try {
@@ -1233,7 +1266,9 @@ const getEmployeeEducationDetails = async (req, res) => {
   const { employeeId } = req.params;
 
   if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+    return res
+      .status(403)
+      .json({ error: "Access denied: Insufficient permissions" });
   }
 
   try {
@@ -1264,7 +1299,9 @@ const getEmployeeDocuments = async (req, res) => {
   const { employeeId } = req.params;
 
   if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+    return res
+      .status(403)
+      .json({ error: "Access denied: Insufficient permissions" });
   }
 
   try {
@@ -1289,7 +1326,9 @@ const getEmployeeBankDetails = async (req, res) => {
   const { employeeId } = req.params;
 
   if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+    return res
+      .status(403)
+      .json({ error: "Access denied: Insufficient permissions" });
   }
 
   try {
@@ -1312,8 +1351,7 @@ const getEmployeeBankDetails = async (req, res) => {
     res.status(500).json({ error: "Database error" });
   }
 };
-
-
+  
 module.exports = {
   createEmployee,
   createEmployeePersonalDetails,
@@ -1326,7 +1364,7 @@ module.exports = {
   getCurrentUserProfile,
   getEmployeeProgress,
   getEmployeeById,
-   getEmployeePersonalDetails,
+  getEmployeePersonalDetails,
   getEmployeeEducationDetails,
   getEmployeeDocuments,
   getEmployeeBankDetails,

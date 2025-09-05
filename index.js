@@ -16,7 +16,7 @@ const performanceRouter = require('./routes/performanceRoutes')
 require("./config/Scheduler");
 const siteVisitRouter = require('./routes/siteVisitRoutes')
 const {initializeSocket} = require('./controllers/siteVisitController')
-
+const companyRouter = require('./routes/companyRoutes')
 
 const allowedOrigins = [
   'http://localhost:3004',
@@ -61,6 +61,7 @@ app.use('/api', payslipRouter);
 app.use('/api', travelExpensesRouter);
 app.use('/api', performanceRouter);
 app.use('/api', siteVisitRouter);
+app.use('/api', companyRouter)
 
 const port = 3007;
 server.listen(port, () => {

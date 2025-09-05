@@ -5,8 +5,16 @@ const path = require("path");
 const fs = require("fs");
 const queryAsync = util.promisify(pool.query).bind(pool);
 
+const COMPANY_CONFIG = {
+  company_id: 1,
+  company_name: "MNTechs Solutions Pvt Ltd",
+  company_pan: "ABCDE1234F",
+  company_gstin: "12ABCDE1234F1Z5",
+  address: "123 Business Street, City, Country",
+};
+
 const formatCurrency = (value) => {
-  return `₹${(value || 0).toLocaleString("en-IN", {
+  return `₹${(parseFloat(value) || 0).toLocaleString("en-IN", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -19,7 +27,6 @@ const validateMonth = (month) => {
   return true;
 };
 
-// Simplified tax calculation (adjust as per actual Indian tax slabs)
 const calculateTax = (gross) => {
   if (gross <= 250000) return 0;
   if (gross <= 500000) return gross * 0.05;
@@ -29,21 +36,40 @@ const calculateTax = (gross) => {
 
 const getPayrolls = async (req, res) => {
   try {
-    const { month } = req.query;
+    const { month, page = 1, limit = 10 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
     let query = "SELECT * FROM payroll";
+    let countQuery = "SELECT COUNT(*) as total FROM payroll";
     let params = [];
+    let countParams = [];
 
     if (month) {
       validateMonth(month);
       query += " WHERE month = ?";
+      countQuery += " WHERE month = ?";
       params.push(month);
+      countParams.push(month);
     }
 
-    const rows = await queryAsync(query, params);
-    res.json({ message: "Payroll fetched successfully", data: rows });
+    query += " LIMIT ? OFFSET ?";
+    params.push(parseInt(limit), offset);
+
+    const [rows, [{ total }]] = await Promise.all([
+      queryAsync(query, params),
+      queryAsync(countQuery, countParams),
+    ]);
+
+    res.json({
+      message: "Payroll fetched successfully",
+      data: rows,
+      totalRecords: total,
+    });
   } catch (err) {
-    console.error("DB error:", err);
-    res.status(500).json({ error: "Database error", details: err.sqlMessage || err.message });
+    console.error("DB error:", err.message, err.sqlMessage);
+    res.status(500).json({
+      error: "Database error",
+      details: err.sqlMessage || err.message,
+    });
   }
 };
 
@@ -76,7 +102,14 @@ const createPayroll = async (req, res) => {
     }
   }
 
-  const numericFields = { grossSalary, pfDeduction, esicDeduction, taxDeduction, professionalTax, netSalary };
+  const numericFields = {
+    grossSalary,
+    pfDeduction,
+    esicDeduction,
+    taxDeduction,
+    professionalTax,
+    netSalary,
+  };
   for (const [key, value] of Object.entries(numericFields)) {
     if (isNaN(value) || Number(value) < 0) {
       return res.status(400).json({ error: `Invalid ${key}` });
@@ -89,15 +122,16 @@ const createPayroll = async (req, res) => {
       return res.status(400).json({ error: "Invalid payment date format. Use YYYY-MM-DD" });
     }
 
-    const calculatedNetSalary = grossSalary - (pfDeduction + esicDeduction + taxDeduction + professionalTax);
+    const calculatedNetSalary =
+      grossSalary - (pfDeduction + esicDeduction + taxDeduction + professionalTax);
     if (Math.abs(calculatedNetSalary - netSalary) > 0.01) {
       return res.status(400).json({ error: "Net salary calculation mismatch" });
     }
 
     const result = await queryAsync(
       `INSERT INTO payroll 
-      (employee_name, employee_id, department, gross_salary, pf_deduction, esic_deduction, tax_deduction, professional_tax, net_salary, status, payment_method, month, payment_date, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (employee_name, employee_id, department, gross_salary, pf_deduction, esic_deduction, tax_deduction, professional_tax, net_salary, status, payment_method, month, payment_date, created_by, company_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name.trim(),
         id.trim(),
@@ -113,6 +147,7 @@ const createPayroll = async (req, res) => {
         month,
         paymentDate,
         req.user.employee_id,
+        COMPANY_CONFIG.company_id,
       ]
     );
     res.status(201).json({
@@ -120,101 +155,94 @@ const createPayroll = async (req, res) => {
       data: { id: result.insertId, ...req.body, created_by: req.user.employee_id },
     });
   } catch (err) {
-    console.error("DB error:", err);
-    res.status(500).json({ error: "Database error", details: err.sqlMessage || err.message });
+    console.error("DB error:", err.message, err.sqlMessage);
+    res.status(500).json({
+      error: "Database error",
+      details: err.sqlMessage || err.message,
+    });
   }
 };
 
 const generatePayroll = async (req, res) => {
-  const { month } = req.body;
-  const user = req.user;
-
-  if (!["super_admin", "hr"].includes(user.role)) {
+  const userRole = req.user?.role;
+  if (!["super_admin", "hr"].includes(userRole)) {
     return res.status(403).json({ error: "Access denied" });
   }
-
+  const { month } = req.body;
   try {
     validateMonth(month);
-
-    const employees = await queryAsync(`
-      SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses
-      FROM employees
-      UNION
-      SELECT employee_id, full_name, NULL as department, basic_salary, allowances, bonuses
-      FROM hrs
-      UNION
-      SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses
-      FROM dept_heads
-      UNION
-      SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses
-      FROM managers
-    `);
-
+    const employees = await queryAsync(
+      `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
+       FROM employees
+       UNION SELECT employee_id, full_name, NULL, basic_salary, allowances, bonuses, NULL
+       FROM hrs
+       UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
+       FROM dept_heads
+       UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
+       FROM managers`
+    );
     if (!employees.length) {
       return res.status(404).json({ error: "No employees found" });
     }
 
-    // Hardcode company details if no company table exists
-    const company = {
-      company_id: 1,
-      company_name: "MNTechs Solutions Pvt Ltd",
-      company_pan: "ABCDE1234F",
-      company_gstin: "12ABCDE1234F1Z5",
-      address: "123 Business Street, City, Country",
-    };
-
-    // Optional: Uncomment if you have a company table
-    // const [company] = await queryAsync("SELECT * FROM company LIMIT 1");
-    // if (!company) {
-    //   return res.status(404).json({ error: "Company details not found" });
-    // }
-
     await queryAsync("DELETE FROM payroll WHERE month = ?", [month]);
-
-    const payrollRecords = [];
+    const payrolls = [];
     for (const emp of employees) {
-      const [bankDetails] = await queryAsync(
-        `SELECT bank_account_number, ifsc_number FROM bank_details WHERE employee_id = ?`,
-        [emp.employee_id]
-      );
-
-      const gross_salary = (parseFloat(emp.basic_salary) || 0) + (parseFloat(emp.allowances) || 0) + (parseFloat(emp.bonuses) || 0);
-      const pf_deduction = Math.min((parseFloat(emp.basic_salary) || 0) * 0.12, 1800);
+      if (!emp.basic_salary) {
+        console.warn(`Skipping employee ${emp.employee_id} due to missing salary data`);
+        continue;
+      }
+      const gross_salary =
+        parseFloat(emp.basic_salary || 0) +
+        parseFloat(emp.allowances || 0) +
+        parseFloat(emp.bonuses || 0);
+      const pf_deduction = Math.min(gross_salary * 0.12, 1800);
       const esic_deduction = gross_salary <= 21000 ? gross_salary * 0.0075 : 0;
       const professional_tax = gross_salary <= 15000 ? 0 : 200;
       const tax_deduction = calculateTax(gross_salary);
-      const net_salary = gross_salary - pf_deduction - esic_deduction - professional_tax - tax_deduction;
+      const net_salary =
+        gross_salary - (pf_deduction + esic_deduction + professional_tax + tax_deduction);
 
       const payrollData = {
         employee_id: emp.employee_id,
         employee_name: emp.full_name,
-        department: emp.department || "HR",
+        department: emp.department_name || "HR",
+        designation_name: emp.designation_name || null,
         gross_salary,
-        net_salary,
         pf_deduction,
         esic_deduction,
         professional_tax,
         tax_deduction,
         basic_salary: parseFloat(emp.basic_salary) || 0,
         hra: (parseFloat(emp.allowances) || 0) * 0.4,
-        da: (parseFloat(emp.allowances) || 0) * 0.5,
-        other_allowances: (parseFloat(emp.allowances) || 0) * 0.1,
-status: user.role === "super_admin" ? "Paid" : "Pending",
-        payment_method: bankDetails ? "Bank Transfer" : "Cash",
-        payment_date: new Date(month + "-01").toISOString().split("T")[0],
+        da: (parseFloat(emp.allowances) || 0) * 0.2,
+        other_allowances: (parseFloat(emp.allowances) || 0) * 0.4,
+        net_salary,
+        status: userRole === "super_admin" ? "Paid" : "Pending",
+        payment_method: "Bank Transfer",
+        payment_date: `${month}-01`,
         month,
-        created_by: user.employee_id,
-        company_id: company.company_id,
+        created_by: req.user.employee_id,
+        company_id: COMPANY_CONFIG.company_id,
       };
-
       await queryAsync("INSERT INTO payroll SET ?", payrollData);
-      payrollRecords.push(payrollData);
+      payrolls.push(payrollData);
     }
 
-    res.status(201).json({ message: "Payroll generated successfully", data: payrollRecords });
-  } catch (error) {
-    console.error("Error generating payroll:", error.message, error.sqlMessage);
-    res.status(500).json({ error: "Failed to generate payroll", details: error.message });
+    if (!payrolls.length) {
+      return res.status(400).json({ error: "No valid employees found for payroll generation" });
+    }
+
+    res.json({
+      message: `Payroll generated successfully for ${payrolls.length} employees`,
+      data: payrolls,
+    });
+  } catch (err) {
+    console.error("Error generating payroll:", err.message, err.sqlMessage);
+    res.status(500).json({
+      error: "Failed to generate payroll",
+      details: err.sqlMessage || err.message,
+    });
   }
 };
 
@@ -233,25 +261,22 @@ const generatePayrollForEmployee = async (req, res) => {
 
   try {
     validateMonth(month);
-
     const [employee] = await queryAsync(
-      `SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses,designation_name
-
+      `SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses, designation_name
        FROM employees WHERE employee_id = ?
-       UNION
-       SELECT employee_id, full_name, NULL as department, basic_salary, allowances, bonuses, NULL as designation_name
-
+       UNION SELECT employee_id, full_name, NULL, basic_salary, allowances, bonuses, NULL
        FROM hrs WHERE employee_id = ?
-       UNION
-       SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses, designation_name 
+       UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
        FROM dept_heads WHERE employee_id = ?
-       UNION
-       SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses, designation_name 
+       UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
        FROM managers WHERE employee_id = ?`,
       [employeeId, employeeId, employeeId, employeeId]
     );
     if (!employee) {
       return res.status(404).json({ error: "Employee not found" });
+    }
+    if (!employee.basic_salary) {
+      return res.status(400).json({ error: "Employee has no salary data" });
     }
 
     const [existingPayroll] = await queryAsync(
@@ -259,7 +284,9 @@ const generatePayrollForEmployee = async (req, res) => {
       [employeeId, month]
     );
     if (existingPayroll) {
-      return res.status(400).json({ error: `Payroll already exists for ${employeeId} for ${month}` });
+      return res.status(400).json({
+        error: `Payroll already exists for ${employeeId} for ${month}`,
+      });
     }
 
     const [bankDetails] = await queryAsync(
@@ -267,27 +294,22 @@ const generatePayrollForEmployee = async (req, res) => {
       [employeeId]
     );
 
-    // Hardcode company details if no company table exists
-    const company = {
-      company_id: 1,
-      company_name: "MNTechs Solutions Pvt Ltd",
-      company_pan: "ABCDE1234F",
-      company_gstin: "12ABCDE1234F1Z5",
-      address: "123 Business Street, City, Country",
-    };
-
-    const gross_salary = (parseFloat(employee.basic_salary) || 0) + (parseFloat(employee.allowances) || 0) + (parseFloat(employee.bonuses) || 0);
-    const pf_deduction = Math.min((parseFloat(employee.basic_salary) || 0) * 0.12, 1800);
+    const gross_salary =
+      (parseFloat(employee.basic_salary) || 0) +
+      (parseFloat(employee.allowances) || 0) +
+      (parseFloat(employee.bonuses) || 0);
+    const pf_deduction = Math.min(gross_salary * 0.12, 1800);
     const esic_deduction = gross_salary <= 21000 ? gross_salary * 0.0075 : 0;
     const professional_tax = gross_salary <= 15000 ? 0 : 200;
     const tax_deduction = calculateTax(gross_salary);
-    const net_salary = gross_salary - pf_deduction - esic_deduction - professional_tax - tax_deduction;
+    const net_salary =
+      gross_salary - (pf_deduction + esic_deduction + professional_tax + tax_deduction);
 
     const payrollData = {
       employee_id: employeeId,
       employee_name: employee.full_name,
       department: employee.department || "HR",
-designation_name: employee.designation_name || null,
+      designation_name: employee.designation_name || null,
       gross_salary,
       net_salary,
       pf_deduction,
@@ -298,38 +320,32 @@ designation_name: employee.designation_name || null,
       hra: (parseFloat(employee.allowances) || 0) * 0.4,
       da: (parseFloat(employee.allowances) || 0) * 0.5,
       other_allowances: (parseFloat(employee.allowances) || 0) * 0.1,
-status: userRole === "super_admin" ? "Paid" : "Pending",
+      status: userRole === "super_admin" ? "Paid" : "Pending",
       payment_method: bankDetails ? "Bank Transfer" : "Cash",
-      payment_date: new Date(month + "-01").toISOString().split("T")[0],
+      payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
       month,
       created_by: userId,
-      company_id: company.company_id,
+      company_id: COMPANY_CONFIG.company_id,
     };
 
     const result = await queryAsync("INSERT INTO payroll SET ?", payrollData);
 
     res.status(201).json({
       message: `Payroll generated successfully for ${employeeId} for ${month}`,
-      data: {
-        id: result.insertId,
-        ...payrollData,
-      },
+      data: { id: result.insertId, ...payrollData },
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: `Database error: ${err.message}` });
+    console.error("DB error:", err.message, err.sqlMessage);
+    res.status(500).json({
+      error: `Database error: ${err.message}`,
+      details: err.sqlMessage || err.message,
+    });
   }
 };
-
-
-
-
 
 const downloadPayrollPDF = async (req, res) => {
   const userRole = req.user?.role;
   const { month, employee_id } = req.query;
-
-  console.log("User data:", req.user);
 
   if (!["super_admin", "hr"].includes(userRole)) {
     return res.status(403).json({ error: "Access denied" });
@@ -337,19 +353,15 @@ const downloadPayrollPDF = async (req, res) => {
 
   try {
     validateMonth(month);
-
     let query = `
       SELECT p.*, e.full_name AS employee_name, COALESCE(e.department_name, 'HR') AS department,
              e.designation_name
       FROM payroll p
       JOIN (
         SELECT employee_id, full_name, department_name, designation_name FROM employees
-        UNION
-        SELECT employee_id, full_name, NULL, NULL FROM hrs
-        UNION
-        SELECT employee_id, full_name, department_name, designation_name FROM dept_heads
-        UNION
-        SELECT employee_id, full_name, department_name, designation_name FROM managers
+        UNION SELECT employee_id, full_name, NULL, NULL FROM hrs
+        UNION SELECT employee_id, full_name, department_name, designation_name FROM dept_heads
+        UNION SELECT employee_id, full_name, department_name, designation_name FROM managers
       ) e ON p.employee_id = e.employee_id
       WHERE p.month = ?
     `;
@@ -361,129 +373,212 @@ const downloadPayrollPDF = async (req, res) => {
     }
 
     const payrolls = await queryAsync(query, params);
-    console.log("Payrolls fetched:", payrolls);
-
     if (!payrolls.length) {
-      return res.status(404).json({ error: "No payroll records found for the specified month and employee" });
+      return res.status(404).json({
+        error: `No payroll records found for ${employee_id ? `employee ${employee_id}` : "the specified month"}`,
+      });
     }
 
-    const doc = new PDFDocument({ margin: 40, size: "A4" });
+    const doc = new PDFDocument({ margin: 40, size: "A4", autoFirstPage: true });
     const fileName = employee_id
       ? `Payroll_${month}_${employee_id}.pdf`
       : `Payroll_${month}_All.pdf`;
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+
+    let streamEnded = false;
+    doc.on("error", (err) => {
+      console.error("PDF stream error:", err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to generate PDF", details: err.message });
+      }
+      streamEnded = true;
+    });
+
+    res.on("finish", () => {
+      streamEnded = true;
+    });
+
     doc.pipe(res);
+    doc.font("Helvetica");
 
-    // Hardcoded company details
-    const company = {
-      company_name: "MNTechs Solutions Pvt Ltd",
-      company_pan: "ABCDE1234F",
-      company_gstin: "12ABCDE1234F1Z5",
-      address: "123 Business Street, City, Country",
-    };
+    let pageNumber = 1;
+    doc.on("pageAdded", () => {
+      pageNumber++;
+      doc
+        .font("Helvetica")
+        .fontSize(8)
+        .fillColor("#6B7280")
+        .text(`Page ${pageNumber}`, 500, 780, { align: "right" });
+    });
 
-    // Company Header
+    // Watermark
+    doc
+      .font("Helvetica")
+      .fontSize(60)
+      .fillColor("#E5E7EB")
+      .opacity(0.1)
+      .text("CONFIDENTIAL", 100, 300, { align: "center", rotate: 45 })
+      .opacity(1);
+
+    // Header with logo
     const logoPath = path.join(__dirname, "../public/images/company_logo.png");
+    doc.rect(0, 0, 595, 80).fill("#F3F4F6").fillColor("#111827");
     if (fs.existsSync(logoPath)) {
-      doc.image(logoPath, 40, 30, { width: 80 });
+      doc.image(logoPath, 40, 15, { width: 100, height: 50 });
     } else {
       console.warn("Logo file not found:", logoPath);
-      doc.fontSize(10).text("Logo Unavailable", 40, 30);
+      doc
+        .font("Helvetica")
+        .fontSize(12)
+        .fillColor("#EF4444")
+        .text("Logo Unavailable", 40, 25);
     }
-    doc
-      .fontSize(16)
-      .font("Helvetica-Bold")
-      .text(company.company_name, 130, 30);
-    doc
-      .fontSize(10)
-      .font("Helvetica")
-      .text(company.address, 130, 50);
-    doc
-      .fontSize(10)
-      .text(`PAN: ${company.company_pan} | GSTIN: ${company.company_gstin}`, 130, 65);
-    doc
-      .fontSize(14)
-      .font("Helvetica-Bold")
-      .text(`Payroll Report - ${month}`, 0, 100, { align: "center" });
-    doc.moveDown(2);
 
-    // Payroll Table
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(20)
+      .fillColor("#111827")
+      .text(COMPANY_CONFIG.company_name, 150, 20, { width: 400, wordWrap: true });
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .fillColor("#6B7280")
+      .text(COMPANY_CONFIG.address, 150, 45, { width: 400, wordWrap: true });
+    doc
+      .fontSize(9)
+      .text(
+        `PAN: ${COMPANY_CONFIG.company_pan} | GSTIN: ${COMPANY_CONFIG.company_gstin}`,
+        150,
+        60,
+        { width: 400 }
+      );
+
+    // Report Title
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(16)
+      .fillColor("#1F2937")
+      .text(`Payroll Report - ${month}${employee_id ? ` for ${employee_id}` : ""}`, 40, 100, { align: "center" });
+    doc.moveDown(1);
+
     const table = {
       headers: [
-        { label: "Employee ID", property: "employee_id", width: 80 },
-        { label: "Name", property: "employee_name", width: 120 },
-        { label: "Department", property: "department", width: 100 },
-        { label: "Designation", property: "designation_name", width: 100 },
-        { label: "Gross Salary", property: "gross_salary", width: 80, renderer: formatCurrency },
-        { label: "Net Salary", property: "net_salary", width: 80, renderer: formatCurrency },
-        { label: "Status", property: "status", width: 60 },
+        { label: "Emp ID", property: "employee_id", width: 80, align: "center" },
+        { label: "Name", property: "employee_name", width: 100, align: "left" },
+        { label: "Department", property: "department", width: 70, align: "left" },
+        { label: "Designation", property: "designation_name", width: 80, align: "left" },
+        { label: "Gross Salary", property: "gross_salary", width: 70, align: "right", renderer: formatCurrency },
+        { label: "Net Salary", property: "net_salary", width: 70, align: "right", renderer: formatCurrency },
+        { label: "Status", property: "status", width: 50, align: "center" },
       ],
-      rows: payrolls.map((p) => [
-        p.employee_id || "-",
-        p.employee_name || "-",
-        p.department || "HR",
-        p.designation_name || "-",
-        parseFloat(p.gross_salary) || 0, // Convert to number
-        parseFloat(p.net_salary) || 0,   // Convert to number
-        p.status || "-",
-      ]),
+      datas: payrolls
+        .filter((p) => p.employee_id && p.employee_name)
+        .map((p) => ({
+          employee_id: (p.employee_id || "-").substring(0, 15),
+          employee_name: (p.employee_name || "-").substring(0, 18),
+          department: (p.department || "HR").substring(0, 12),
+          designation_name: (p.designation_name || "-").substring(0, 15),
+          gross_salary: parseFloat(p.gross_salary) || 0,
+          net_salary: parseFloat(p.net_salary) || 0,
+          status: (p.status || "-").substring(0, 10),
+        })),
     };
 
-    console.log("Table data:", table);
-    try {
-      await doc.table(table, {
-        prepareHeader: () => doc.font("Helvetica-Bold").fontSize(10),
-        prepareRow: (row, indexColumn, indexRow, rectRow) => {
-          doc.font("Helvetica").fontSize(10);
-          console.log(`Rendering row ${indexRow}:`, row); // Debug each row
-        },
-        padding: 5,
-        columnSpacing: 5,
-        hideHeader: false,
-        minRowHeight: 20, // Ensure rows are tall enough
-      });
-    } catch (err) {
-      console.error("Table rendering error:", err.message);
-      throw new Error("Failed to render table");
-    }
-
-    // Footer
-    doc.moveDown(2);
+    doc.y = 150;
     doc
-      .fontSize(10)
+      .font("Helvetica-Bold")
+      .fontSize(12)
+      .fillColor("#1F2937")
+      .text("Payroll Summary", 40, doc.y, { align: "left" });
+    doc.moveDown(0.5);
+
+    await doc.table(table, {
+      x: 40,
+      width: 510,
+      padding: 4,
+      columnSpacing: 4,
+      minRowHeight: 20,
+      prepareHeader: () => {
+        doc
+          .rect(40, doc.y, 510, 25)
+          .fill("#111827")
+          .fillColor("#FFFFFF")
+          .font("Helvetica-Bold")
+          .fontSize(10);
+      },
+      prepareRow: (row, indexColumn, indexRow, rectRow) => {
+        doc.font("Helvetica").fontSize(8).fillColor("#111827");
+        if (indexRow % 2 === 0) {
+          doc
+            .rect(rectRow.x, rectRow.y, rectRow.width, rectRow.height)
+            .fill("#F9FAFB")
+            .fillColor("#111827");
+        }
+        if (indexColumn === table.headers.length - 1) {
+          doc.fillColor(row.status === "Paid" ? "#15803D" : "#DC2626").font("Helvetica-Bold");
+        }
+        return 20;
+      },
+      border: { top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 },
+      headerBorder: { top: 1, bottom: 1, left: 1, right: 1 },
+      wordWrap: true,
+      maxHeight: 650,
+      continuedHeader: () => {
+        doc
+          .font("Helvetica")
+          .fontSize(8)
+          .fillColor("#6B7280")
+          .text(`(Continued from Page ${pageNumber - 1})`, 40, doc.y + 10, { align: "left" });
+        doc.moveDown(0.5);
+      },
+    });
+
+    doc.moveDown(1);
+    doc
       .font("Helvetica")
-      .text(`Generated on: ${new Date().toLocaleDateString("en-IN")}`, 40, doc.y);
+      .fontSize(9)
+      .fillColor("#6B7280")
+      .text(`Generated on: ${new Date().toLocaleDateString("en-IN")}`, 40, doc.y, { align: "left" });
     doc.text(`Generated by: ${req.user?.employee_id || "Admin"}`, 40, doc.y + 15);
 
-    // HR Signature
     const signaturePath = path.join(__dirname, "../public/images/hr_signature.png");
     if (fs.existsSync(signaturePath)) {
-      doc.image(signaturePath, 350, doc.y + 20, { width: 100 });
+      doc.image(signaturePath, 400, doc.y + 20, { width: 100, height: 40 });
     } else {
       console.warn("Signature file not found:", signaturePath);
       doc
+        .font("Helvetica")
         .fontSize(10)
-        .font("Helvetica-Bold")
-        .text("HR Signature: ___________________________", 350, doc.y + 20, { align: "right" });
+        .fillColor("#1F2937")
+        .text("HR Authorized Signatory", 400, doc.y + 20, { align: "right", width: 150 });
     }
 
-    doc.end();
+    doc
+      .font("Helvetica")
+      .fontSize(8)
+      .fillColor("#6B7280")
+      .text("Page 1", 500, 780, { align: "right" });
+
+    if (!streamEnded) {
+      doc.end();
+    }
   } catch (err) {
     console.error("Error generating payroll PDF:", err.message, err.sqlMessage);
-    res.status(500).json({ error: "Failed to generate payroll PDF", details: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "Failed to generate payroll PDF",
+        details: err.sqlMessage || err.message,
+      });
+    }
   }
 };
-
-
-
-
 
 module.exports = {
   getPayrolls,
   createPayroll,
   generatePayroll,
-  generatePayrollForEmployee, 
+  generatePayrollForEmployee,
   downloadPayrollPDF,
 };

@@ -5,7 +5,6 @@ const path = require("path");
 const fs = require("fs");
 const queryAsync = util.promisify(pool.query).bind(pool);
 
-// Company configuration (shared with payrollController)
 const COMPANY_CONFIG = {
   company_id: 1,
   company_name: "MNTechs Solutions Pvt Ltd",
@@ -28,7 +27,6 @@ const validateInput = (employeeId, month) => {
   return true;
 };
 
-// Shared tax calculation function
 const calculateTax = (gross) => {
   if (gross <= 250000) return 0;
   if (gross <= 500000) return gross * 0.05;
@@ -55,7 +53,7 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
     `SELECT id FROM payroll WHERE employee_id = ? AND month = ?`,
     [employeeId, month]
   );
-  if (existingPayroll) return null; // Payroll already exists
+  if (existingPayroll) return null;
 
   const [bankDetails] = await queryAsync(
     `SELECT bank_account_number, ifsc_number FROM bank_details WHERE employee_id = ?`,
@@ -87,7 +85,7 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
     hra: (parseFloat(employee.allowances) || 0) * 0.4,
     da: (parseFloat(employee.allowances) || 0) * 0.5,
     other_allowances: (parseFloat(employee.allowances) || 0) * 0.1,
-    status: userRole === "super_admin" ? "Paid" : "Pending",
+    status: userRole === "employee" ? "Approved" : userRole === "super_admin" ? "Paid" : "Pending", // Set 'Approved' for employees
     payment_method: bankDetails ? "Bank Transfer" : "Cash",
     payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
     month,
@@ -101,7 +99,6 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
 
 const numberToWords = (num) => {
   if (num === 0) return "zero";
-
   const a = [
     "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
     "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
@@ -124,10 +121,8 @@ const numberToWords = (num) => {
   return numToWords(num).trim();
 };
 
-/** ---------------- HELPER: DRAW TABLE ---------------- **/
 const drawTable = (doc, title, data, startX, startY) => {
   const col1Width = 120, col2Width = 80, headerHeight = 20, rowHeight = 20;
-
   let y = startY;
   doc.rect(startX, y, col1Width + col2Width, headerHeight).fill("#1a3c7a");
   doc.fillColor("#fff").font("Helvetica-Bold").fontSize(10)
@@ -143,11 +138,9 @@ const drawTable = (doc, title, data, startX, startY) => {
       .text(label, startX + 5, y + 5, { width: col1Width });
     doc.font(isBold ? "Helvetica-Bold" : "Helvetica")
       .text(value, startX + col1Width, y + 5, { width: col2Width, align: "right" });
-
     doc.moveTo(startX, y + rowHeight)
       .lineTo(startX + col1Width + col2Width, y + rowHeight)
       .strokeColor("#ddd").lineWidth(0.5).stroke();
-
     y += rowHeight;
   });
 };
@@ -172,7 +165,7 @@ const generatePayslip = async (req, res) => {
         p.employee_id, p.month, p.gross_salary, p.net_salary, p.pf_deduction, 
         p.esic_deduction, p.tax_deduction, p.professional_tax, p.basic_salary, 
         p.hra, p.da, p.other_allowances, p.payment_method, p.payment_date, 
-        p.created_by, e.full_name AS employee_name, COALESCE(e.department_name, 'HR') AS department, 
+        p.status, p.created_by, e.full_name AS employee_name, COALESCE(e.department_name, 'HR') AS department, 
         e.designation_name, pd.pan_number, pd.uan_number, 
         b.bank_account_number, b.ifsc_number AS ifsc_code
       FROM payroll p
@@ -213,7 +206,6 @@ const generatePayslip = async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
     doc.pipe(res);
 
-    /** ---------------- HEADER ---------------- **/
     const logoPath = path.join(__dirname, "../public/images/company_logo.png");
     if (fs.existsSync(logoPath)) {
       doc.image(logoPath, 40, 30, { width: 80, height: 40 });
@@ -221,17 +213,13 @@ const generatePayslip = async (req, res) => {
 
     doc.font("Helvetica-Bold").fontSize(18).fillColor("#1a3c7a")
       .text(COMPANY_CONFIG.company_name, 140, 30);
-
     doc.font("Helvetica").fontSize(9).fillColor("#444")
       .text(COMPANY_CONFIG.address, 140, 50, { width: 400 });
-
     doc.fontSize(9)
       .text(`PAN: ${COMPANY_CONFIG.company_pan}   GSTIN: ${COMPANY_CONFIG.company_gstin}`, 140, 65);
-
     doc.moveDown(2).font("Helvetica-Bold").fontSize(14).fillColor("#1a3c7a")
       .text(`Payslip for ${month}`, { align: "center", underline: true });
 
-    /** ---------------- EMPLOYEE DETAILS ---------------- **/
     doc.moveDown(2);
     const leftDetails = [
       ["Employee Name", employee.employee_name || "-"],
@@ -267,8 +255,6 @@ const generatePayslip = async (req, res) => {
     });
 
     doc.moveDown(2);
-
-    /** ---------------- EARNINGS / DEDUCTIONS ---------------- **/
     const startY = doc.y + 10;
     const earnings = [
       ["Basic Salary", formatCurrency(employee.basic_salary)],
@@ -277,7 +263,6 @@ const generatePayslip = async (req, res) => {
       ["Other Allowances", formatCurrency(employee.other_allowances)],
       ["Total Earnings", formatCurrency(employee.gross_salary)],
     ];
-
     const deductions = [
       ["Provident Fund", formatCurrency(employee.pf_deduction)],
       ["ESIC", formatCurrency(employee.esic_deduction)],
@@ -296,20 +281,15 @@ const generatePayslip = async (req, res) => {
     drawTable(doc, "Deductions", deductions, 320, startY);
 
     doc.moveDown(6);
-
-    /** ---------------- NET PAY IN WORDS ---------------- **/
     doc.font("Helvetica-Bold").fontSize(11).fillColor("#000")
       .text(formatCurrency(employee.net_salary), { align: "center" });
     doc.font("Helvetica").fontSize(9)
       .text(numberToWords(employee.net_salary).replace(/^\w/, c => c.toUpperCase()), { align: "center" });
 
     doc.moveDown(4);
-
-    /** ---------------- SIGNATURES ---------------- **/
     doc.font("Helvetica").fontSize(9)
       .text("Employer Signature", 50, doc.y, { width: 200, align: "left" })
       .text("Employee Signature", 350, doc.y, { width: 200, align: "right" });
-
     doc.moveDown(2);
     doc.moveTo(50, doc.y).lineTo(200, doc.y).stroke();
     doc.moveTo(350, doc.y).lineTo(500, doc.y).stroke();
@@ -326,15 +306,15 @@ const generatePayslip = async (req, res) => {
 
 const getPayslips = async (req, res) => {
   const { role, employee_id } = req.user;
-  const { page = 1, limit = 10 } = req.query;
+  const { page = 1, limit = 10, month } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   try {
     let query = `
       SELECT p.employee_id, p.month, e.full_name as employee, COALESCE(e.department_name, 'HR') as department, 
-             e.designation_name, p.net_salary as salary,
+             e.designation_name, p.net_salary as salary, p.status,
              p.basic_salary, p.hra, p.da, p.other_allowances, p.pf_deduction, 
-             p.esic_deduction, p.tax_deduction, p.professional_tax
+             p.esic_deduction, p.tax_deduction, p.professional_tax, p.payment_date
       FROM payroll p
       JOIN (
         SELECT employee_id, full_name, department_name, designation_name FROM employees
@@ -365,6 +345,13 @@ const getPayslips = async (req, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
+    if (month) {
+      query += role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
+      countQuery += role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
+      params.push(month);
+      countParams.push(month);
+    }
+
     query += " LIMIT ? OFFSET ?";
     params.push(parseInt(limit), offset);
 
@@ -387,4 +374,4 @@ const getPayslips = async (req, res) => {
   }
 };
 
-module.exports = { generatePayslip, getPayslips };
+module.exports = { generatePayslip, getPayslips };  

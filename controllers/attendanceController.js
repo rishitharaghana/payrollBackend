@@ -5,7 +5,7 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 
 const markAttendance = async (req, res) => {
   const { employee_id, date, login_time, logout_time, recipient, location } = req.body;
-  const { role, id } = req.user; 
+  const { role, id } = req.user;
   if (!employee_id || !date || !login_time || !recipient || !location) {
     return res.status(400).json({ error: 'Date, login time, recipient, and location are required' });
   }
@@ -21,6 +21,9 @@ const markAttendance = async (req, res) => {
   if (logout_time) {
     const login = new Date(`1970-01-01T${login_time}:00`);
     const logout = new Date(`1970-01-01T${logout_time}:00`);
+    if (isNaN(login) || isNaN(logout)) {
+      return res.status(400).json({ error: 'Invalid login or logout time format' });
+    }
     if (logout <= login) {
       return res.status(400).json({ error: 'Logout time must be after login time' });
     }
@@ -70,7 +73,7 @@ const markAttendance = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('DB error:', err.message, err.sqlMessage, err.code);
+    console.error('DB error in markAttendance:', err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -104,7 +107,7 @@ const fetchEmployeeAttendance = async (req, res) => {
       })),
     });
   } catch (err) {
-    console.error('DB error:', err);
+    console.error('DB error in fetchEmployeeAttendance:', err);
     res.status(500).json({ error: 'Database error' });
   }
 };
@@ -151,7 +154,7 @@ const fetchAllAttendance = async (req, res) => {
       data: attendance,
     });
   } catch (err) {
-    console.error('DB error:', err);
+    console.error('DB error in fetchAllAttendance:', err);
     res.status(500).json({ error: 'Database error' });
   }
 };
@@ -194,8 +197,240 @@ const updateAttendanceStatus = async (req, res) => {
       data: { id: attendanceId, status },
     });
   } catch (err) {
-    console.error('DB error:', err);
+    console.error('DB error in updateAttendanceStatus:', err);
     res.status(500).json({ error: 'Database error' });
+  }
+};
+
+const getEmployeeAverageWorkingHours = async (req, res) => {
+  const { role, id } = req.user;
+  const { employeeId } = req.params;
+  const { start_date, end_date } = req.query;
+
+  if (!['super_admin', 'hr', 'employee'].includes(role)) {
+    return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+  }
+
+  if (role === 'employee') {
+    const [user] = await queryAsync(
+      `SELECT employee_id FROM employees WHERE id = ?`,
+      [id]
+    );
+    if (!user || user.employee_id !== employeeId) {
+      return res.status(403).json({
+        error: 'Access denied: You can only view your own working hours',
+      });
+    }
+  }
+
+  try {
+    const [employee] = await queryAsync(
+      `SELECT COALESCE(e.full_name, h.full_name, d.full_name, u.full_name, 'Unknown') AS employee_name
+       FROM attendance a
+       LEFT JOIN employees e ON a.employee_id = e.employee_id
+       LEFT JOIN hrs h ON a.employee_id = h.employee_id
+       LEFT JOIN dept_heads d ON a.employee_id = d.employee_id
+       LEFT JOIN hrms_users u ON a.employee_id = u.employee_id
+       WHERE a.employee_id = ? LIMIT 1`,
+      [employeeId]
+    );
+    if (!employee) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    let query = `
+      SELECT 
+        DATE_FORMAT(a.date, '%Y-%m-%d') AS date,
+        a.login_time,
+        a.logout_time,
+        COALESCE(CAST(TIMESTAMPDIFF(SECOND, a.login_time, a.logout_time) / 3600 AS DECIMAL(10,2)), 0) AS hours_worked
+      FROM attendance a
+      WHERE a.employee_id = ? 
+        AND a.status = 'Approved' 
+        AND a.login_time IS NOT NULL 
+        AND a.logout_time IS NOT NULL
+    `;
+    let params = [employeeId];
+
+    if (start_date && end_date) {
+      query += ' AND a.date BETWEEN ? AND ?';
+      params.push(start_date, end_date);
+    }
+
+    query += ' ORDER BY a.date';
+
+    const attendance = await queryAsync(query, params);
+    console.log('Raw attendance data for employee', employeeId, ':', attendance); // Debug
+
+    if (attendance.length === 0) {
+      return res.status(200).json({
+        message: 'No approved attendance records found for this employee',
+        data: {
+          employee_id: employeeId,
+          employee_name: employee.employee_name,
+          average_working_hours: 0,
+          days_counted: 0,
+          trend_data: [],
+        },
+      });
+    }
+
+    const totalHours = attendance.reduce((sum, record) => sum + (parseFloat(record.hours_worked) || 0), 0);
+    const averageHours = totalHours / attendance.length;
+
+    const trendData = attendance.map(record => ({
+      date: record.date,
+      hours: parseFloat(record.hours_worked) || 0,
+    }));
+
+    res.json({
+      message: 'Average working hours fetched successfully',
+      data: {
+        employee_id: employeeId,
+        employee_name: employee.employee_name,
+        average_working_hours: parseFloat(averageHours.toFixed(2)) || 0,
+        days_counted: attendance.length,
+        trend_data: trendData,
+      },
+    });
+  } catch (err) {
+    console.error('DB error in getEmployeeAverageWorkingHours:', err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.message}` });
+  }
+};
+
+
+const getAllEmployeesTotalWorkingHours = async (req, res) => {
+  const { role, id } = req.user;
+  const { start_date, end_date } = req.query;
+
+  if (!['super_admin', 'hr', 'dept_head'].includes(role)) {
+    return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+  }
+
+  try {
+    let query = `
+      SELECT 
+        a.employee_id,
+        COALESCE(e.full_name, h.full_name, d.full_name, u.full_name, 'Unknown') AS employee_name,
+        COALESCE(e.department_name, d.department_name, h.department_name, u.department_name, 'N/A') AS department_name,
+        COALESCE(CAST(SUM(TIMESTAMPDIFF(SECOND, a.login_time, a.logout_time) / 3600) AS DECIMAL(10,2)), 0) AS total_working_hours
+      FROM attendance a
+      LEFT JOIN employees e ON a.employee_id = e.employee_id
+      LEFT JOIN hrs h ON a.employee_id = h.employee_id
+      LEFT JOIN dept_heads d ON a.employee_id = d.employee_id
+      LEFT JOIN hrms_users u ON a.employee_id = u.employee_id
+      WHERE a.status = 'Approved' 
+        AND a.login_time IS NOT NULL 
+        AND a.logout_time IS NOT NULL
+    `;
+    let params = [];
+
+    if (start_date && end_date) {
+      query += ' AND a.date BETWEEN ? AND ?';
+      params.push(start_date, end_date);
+    }
+
+    if (role === 'dept_head') {
+      const [deptHead] = await queryAsync(
+        'SELECT department_name FROM dept_heads WHERE id = ?',
+        [id]
+      );
+      if (!deptHead) {
+        return res.status(403).json({ error: 'Access denied: Not a department head' });
+      }
+      query += ' AND (e.department_name = ? OR d.department_name = ? OR h.department_name = ? OR u.department_name = ?)';
+      params.push(deptHead.department_name, deptHead.department_name, deptHead.department_name, deptHead.department_name);
+    }
+
+    query += ' GROUP BY a.employee_id, employee_name, department_name';
+
+    const attendance = await queryAsync(query, params);
+    console.log('Raw attendance data for all employees:', attendance); // Debug
+
+    const result = attendance.map(record => ({
+      employee_id: record.employee_id,
+      employee_name: record.employee_name,
+      department_name: record.department_name,
+      total_working_hours: parseFloat(record.total_working_hours) || 0,
+    }));
+
+    res.json({
+      message: 'Total working hours for all employees fetched successfully',
+      data: result,
+    });
+  } catch (err) {
+    console.error('DB error in getAllEmployeesTotalWorkingHours:', err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.message}` });
+  }
+};
+
+
+const getTotalAverageWorkingHours = async (req, res) => {
+  const { role } = req.user;
+  const { start_date, end_date } = req.query;
+
+  if (!['super_admin', 'hr'].includes(role)) {
+    return res.status(403).json({ error: 'Access denied: Super admin or HR only' });
+  }
+
+  try {
+    let query = `
+      SELECT 
+        a.date,
+        COUNT(DISTINCT a.employee_id) AS employee_count,
+        COALESCE(CAST(AVG(TIMESTAMPDIFF(SECOND, a.login_time, a.logout_time) / 3600) AS DECIMAL(10,2)), 0) AS total_average_working_hours
+      FROM attendance a
+      WHERE a.status = 'Approved' 
+        AND a.login_time IS NOT NULL 
+        AND a.logout_time IS NOT NULL
+    `;
+    let params = [];
+
+    if (start_date && end_date) {
+      query += ' AND a.date BETWEEN ? AND ?';
+      params.push(start_date, end_date);
+    }
+
+    query += ' GROUP BY a.date ORDER BY a.date';
+
+    const attendance = await queryAsync(query, params);
+    console.log('Raw attendance data for total average:', attendance); // Debug
+
+    if (attendance.length === 0) {
+      return res.status(200).json({
+        message: 'No approved attendance records found',
+        data: {
+          total_average_working_hours: 0,
+          total_days_counted: 0,
+          employee_count: 0,
+          trend_data: [],
+        },
+      });
+    }
+
+    const totalHours = attendance.reduce((sum, record) => sum + (parseFloat(record.total_average_working_hours) || 0), 0);
+    const totalAverageHours = totalHours / attendance.length;
+    const totalDays = attendance.length;
+    const employeeCount = [...new Set(attendance.map(record => record.employee_id))].length;
+
+    const trendData = attendance.map(record => ({
+      date: record.date,
+      hours: parseFloat(record.total_average_working_hours) || 0,
+    }));
+
+    res.json({
+      message: 'Total average working hours fetched successfully',
+      data: {
+        total_average_working_hours: parseFloat(totalAverageHours.toFixed(2)) || 0,
+        total_days_counted: totalDays,
+        employee_count: employeeCount,
+        trend_data: trendData,
+      },
+    });
+  } catch (err) {
+    console.error('DB error in getTotalAverageWorkingHours:', err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
@@ -204,4 +439,7 @@ module.exports = {
   fetchEmployeeAttendance,
   fetchAllAttendance,
   updateAttendanceStatus,
+  getEmployeeAverageWorkingHours,
+  getAllEmployeesTotalWorkingHours,
+  getTotalAverageWorkingHours,
 };

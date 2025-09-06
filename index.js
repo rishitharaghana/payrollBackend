@@ -17,7 +17,7 @@ require("./config/Scheduler");
 const siteVisitRouter = require('./routes/siteVisitRoutes')
 const {initializeSocket} = require('./controllers/siteVisitController')
 const companyRouter = require('./routes/companyRoutes')
-
+// const dashboardRouter = require('./routes/dashboardRoutes')
 const allowedOrigins = [
   'http://localhost:3004',
  'https://fe2663e99cb4.ngrok-free.app',
@@ -61,7 +61,8 @@ app.use('/api', payslipRouter);
 app.use('/api', travelExpensesRouter);
 app.use('/api', performanceRouter);
 app.use('/api', siteVisitRouter);
-app.use('/api', companyRouter)
+app.use('/api', companyRouter);
+// app.use('/api', dashboardRouter);
 
 const port = 3007;
 server.listen(port, () => {

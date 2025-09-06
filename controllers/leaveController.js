@@ -35,13 +35,24 @@ const applyLeave = async (req, res) => {
   const { start_date, end_date, reason, leave_type, recipient_id } = req.body;
   const currentYear = new Date().getFullYear();
 
+  // Validate required fields
   if (!start_date || !end_date || !reason || !leave_type || !recipient_id) {
     return res.status(400).json({
       error: "Start date, end date, reason, leave type, and recipient are required",
     });
   }
 
-  if (new Date(start_date) > new Date(end_date)) {
+  // Normalize dates to YYYY-MM-DD format
+  let normalizedStartDate, normalizedEndDate;
+  try {
+    normalizedStartDate = new Date(start_date).toISOString().split("T")[0];
+    normalizedEndDate = new Date(end_date).toISOString().split("T")[0];
+  } catch (err) {
+    return res.status(400).json({ error: "Invalid date format for start_date or end_date" });
+  }
+
+  // Validate date order
+  if (new Date(normalizedStartDate) > new Date(normalizedEndDate)) {
     return res.status(400).json({ error: "Start date cannot be after end date" });
   }
 
@@ -50,6 +61,7 @@ const applyLeave = async (req, res) => {
   }
 
   try {
+    // Validate recipient based on role
     let isValidRecipient = false;
     if (role === "employee" || role === "dept_head") {
       const hrCheck = await queryAsync(
@@ -69,11 +81,13 @@ const applyLeave = async (req, res) => {
       return res.status(400).json({ error: "Invalid recipient for your role" });
     }
 
+    // Validate leave type
     const validLeaveTypes = ['sick', 'vacation', 'casual', 'maternity', 'paternity'];
     if (!validLeaveTypes.includes(leave_type)) {
       return res.status(400).json({ error: "Invalid leave type" });
     }
 
+    // Calculate total days (excluding holidays and weekends)
     const total_days = await calculateLeaveDays(start_date, end_date);
     if (total_days === 0) {
       console.log("No working days in range, proceeding without balance check");
@@ -87,14 +101,15 @@ const applyLeave = async (req, res) => {
       }
     }
 
+    // Insert leave record with normalized dates
     const leaveQuery = `
       INSERT INTO leaves (employee_id, start_date, end_date, reason, leave_type, status, total_days)
       VALUES (?, ?, ?, ?, ?, 'Pending', ?)
     `;
     const leaveResult = await queryAsync(leaveQuery, [
       employee_id,
-      start_date,
-      end_date,
+      normalizedStartDate, 
+      normalizedEndDate,  
       reason,
       leave_type,
       total_days,

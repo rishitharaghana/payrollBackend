@@ -131,7 +131,9 @@ const createEmployee = async (req, res) => {
     }
 
     if (["employee", "manager"].includes(role) && !join_date) {
-      return res.status(400).json({ error: "Join date is required for this role" });
+      return res
+        .status(400)
+        .json({ error: "Join date is required for this role" });
     }
 
     const validBloodGroups = [
@@ -380,8 +382,16 @@ const updateEmployee = async (req, res) => {
 
     const userRole = req.user.role;
     const { id } = req.params;
-    const { name, email, mobile, emergency_phone, address, role, blood_group, gender } =
-      req.body;
+    const {
+      name,
+      email,
+      mobile,
+      emergency_phone,
+      address,
+      role,
+      blood_group,
+      gender,
+    } = req.body;
     const photo = req.files?.["photo"]?.[0];
 
     if (!["super_admin", "hr"].includes(userRole) && userRole !== role) {
@@ -485,7 +495,8 @@ const updateEmployee = async (req, res) => {
         return res.status(400).json({ error: "Mobile number already in use" });
       }
 
-      const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/"; // Fixed typo in baseUrl
+      const baseUrl =
+        process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/"; // Fixed typo in baseUrl
       const photo_url = photo
         ? `${baseUrl}${path.basename(photo.path)}`
         : req.body.photo === "null"
@@ -554,10 +565,15 @@ const createEmployeePersonalDetails = async (req, res) => {
     employmentType,
     joiningDate,
     contractEndDate,
+    pan_number,
+    adhar_number,
     password = "defaultPass123",
   } = req.body;
 
-  if (!["super_admin", "hr"].includes(userRole) && employeeId !== userId) {
+  if (
+    !["super_admin", "hr", "employee"].includes(userRole) ||
+    (userRole !== "super_admin" && employeeId !== userId)
+  ) {
     return res.status(403).json({
       error: "Access denied: You can only add your own personal details",
     });
@@ -584,22 +600,23 @@ const createEmployeePersonalDetails = async (req, res) => {
   }
 
   try {
-    const [employee] = await queryAsync(
-      `SELECT employee_id, full_name, email, mobile FROM employees WHERE employee_id = ?`,
+    const table = userRole === "hr" ? "hrs" : "employees";
+    const [user] = await queryAsync(
+      `SELECT employee_id, full_name, email, mobile FROM ${table} WHERE employee_id = ?`,
       [employeeId]
     );
-    if (!employee) {
-      return res.status(404).json({ error: "Employee not found" });
+    if (!user) {
+      return res.status(404).json({ error: `${userRole} not found` });
     }
 
     if (
-      userRole === "employee" &&
-      (fullName !== employee.full_name ||
-        email !== employee.email ||
-        phone !== employee.mobile)
+      userRole !== "super_admin" &&
+      (fullName !== user.full_name ||
+        email !== user.email ||
+        phone !== user.mobile)
     ) {
       return res.status(400).json({
-        error: "Full name, email, and phone must match your employee record",
+        error: `Full name, email, and phone must match your ${userRole} record`,
       });
     }
 
@@ -672,45 +689,39 @@ const createEmployeePersonalDetails = async (req, res) => {
     }
 
     let finalEmployeeId = employeeId;
-    if (["super_admin", "hr"].includes(userRole)) {
-      const [existingEmployee] = await queryAsync(
-        `SELECT employee_id FROM employees WHERE employee_id = ?`,
-        [employeeId]
-      );
-      if (!existingEmployee) {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const employeeQuery = `
-          INSERT INTO employees (employee_id, full_name, email, mobile, password, role, is_temporary_password)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `;
-        const employeeValues = [
-          employeeId,
-          fullName,
-          email,
-          phone,
-          hashedPassword,
-          "employee",
-          true,
-        ];
-        await queryAsync(employeeQuery, employeeValues);
-      }
+    if (userRole === "super_admin" && !user) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const employeeQuery = `
+        INSERT INTO ${table} (employee_id, full_name, email, mobile, password, role, is_temporary_password)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `;
+      const employeeValues = [
+        employeeId,
+        fullName,
+        email,
+        phone,
+        hashedPassword,
+        userRole === "hr" ? "hr" : "employee",
+        true,
+      ];
+      await queryAsync(employeeQuery, employeeValues);
     }
 
     const personalQuery = `
       INSERT INTO personal_details (
         employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
         present_address, previous_address, position_type, employer_id_name, position_title,
-        employment_type, joining_date, contract_end_date, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        employment_type, joining_date, pan_number, adhar_number, contract_end_date, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const personalValues = [
       finalEmployeeId,
-      employee.full_name,
+      user.full_name,
       fatherName || null,
       motherName || null,
-      employee.mobile,
+      user.mobile,
       alternatePhone || null,
-      employee.email,
+      user.email,
       gender,
       presentAddress || null,
       previousAddress || null,
@@ -719,6 +730,8 @@ const createEmployeePersonalDetails = async (req, res) => {
       positionTitle || null,
       employmentType || null,
       joiningDate || null,
+      pan_number || null,
+      adhar_number || null,
       contractEndDate || null,
       userId || null,
     ];
@@ -762,7 +775,7 @@ const createEducationDetails = async (req, res) => {
       .status(403)
       .json({ error: "Access denied: Insufficient permissions" });
   }
-  if (userRole === "employee" && normalizedBodyId !== normalizedUserId) {
+  if (userRole !== "super_admin" && normalizedBodyId !== normalizedUserId) {
     return res.status(403).json({
       error: "Access denied: You can only add your own education details",
     });
@@ -788,12 +801,13 @@ const createEducationDetails = async (req, res) => {
   }
 
   try {
+    const table = userRole === "hr" ? "hrs" : "employees";
     const [employee] = await queryAsync(
-      `SELECT employee_id FROM employees WHERE UPPER(TRIM(employee_id)) = ?`,
+      `SELECT employee_id FROM ${table} WHERE UPPER(TRIM(employee_id)) = ?`,
       [normalizedBodyId]
     );
     if (!employee) {
-      return res.status(404).json({ error: "Employee not found" });
+      return res.status(404).json({ error: `${userRole} not found` });
     }
 
     const [existingDetails] = await queryAsync(
@@ -851,20 +865,24 @@ const createDocuments = async (req, res) => {
     let { employeeId, documentType } = req.body;
     const document = req.files?.["document"]?.[0];
 
-    if (userRole === "employee") {
-      employeeId = userId;
-    }
+    // Permission check
     if (!["super_admin", "hr", "employee"].includes(userRole)) {
       return res
         .status(403)
         .json({ error: "Access denied: Insufficient permissions" });
     }
+    if (userRole !== "super_admin") {
+      employeeId = userId;
+    }
 
+    // Validation
     if (!employeeId || !documentType || !document) {
       return res
         .status(400)
         .json({ error: "Employee ID, document type, and file are required" });
     }
+
+    documentType = documentType.toLowerCase();
 
     const allowedTypes = [
       "tenth_class",
@@ -879,33 +897,54 @@ const createDocuments = async (req, res) => {
     }
 
     try {
+      const table = userRole === "hr" ? "hrs" : "employees";
       const [employee] = await queryAsync(
-        `SELECT employee_id FROM employees WHERE employee_id = ?`,
+        `SELECT employee_id FROM ${table} WHERE employee_id = ?`,
         [employeeId]
       );
       if (!employee) {
-        return res.status(404).json({ error: "Employee not found" });
+        return res.status(404).json({ error: `${userRole} not found` });
       }
 
+      // Save file to uploads
       const baseUrl = "http://localhost:3007/uploads/";
       const fileExtension = path.extname(document.originalname).toLowerCase();
-      const fileType = fileExtension === ".pdf" ? "pdf" : "image";
-      const filePath = `${baseUrl}${path.basename(document.path)}`;
+      const timestamp = Date.now();
+      const safeFileName = `${employeeId}_${documentType}_${timestamp}${fileExtension}`;
+      const uploadDir = path.join(__dirname, "../uploads");
+      const finalPath = path.join(uploadDir, safeFileName);
+
+      fs.renameSync(document.path, finalPath);
+
+      const fileName = safeFileName;
+
+      const columnMap = {
+        tenth_class: "tenth_class_doc_path",
+        intermediate: "intermediate_doc_path",
+        graduation: "graduation_doc_path",
+        postgraduation: "postgraduation_doc_path",
+        aadhar: "aadhar_doc_path",
+        pan: "pan_doc_path",
+      };
+      const columnName = columnMap[documentType];
+
+      const createdBy = userId;
 
       const query = `
-        INSERT INTO documents (employee_id, document_type, file_path, file_type)
+        INSERT INTO documents (employee_id, ${columnName}, document_type, created_by)
         VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE ${columnName} = VALUES(${columnName})
       `;
-      const values = [employeeId, documentType, filePath, fileType];
+      const values = [employeeId, fileName, documentType, createdBy];
 
       const result = await queryAsync(query, values);
+
       res.status(201).json({
         message: "Document uploaded successfully",
         data: {
-          id: result.insertId,
           employee_id: employeeId,
           document_type: documentType,
-          file_path: filePath,
+          file_path: `${baseUrl}${fileName}`,
         },
       });
     } catch (err) {
@@ -930,7 +969,7 @@ const createBankDetails = async (req, res) => {
       .json({ error: "Access denied: Insufficient permissions" });
   }
 
-  if (userRole === "employee" && employeeId !== userId) {
+  if (userRole !== "super_admin" && employeeId !== userId) {
     return res
       .status(403)
       .json({ error: "Access denied: You can only add your own bank details" });
@@ -947,12 +986,13 @@ const createBankDetails = async (req, res) => {
   }
 
   try {
+    const table = userRole === "hr" ? "hrs" : "employees";
     const [employee] = await queryAsync(
-      `SELECT employee_id, full_name FROM employees WHERE employee_id = ?`,
+      `SELECT employee_id, full_name FROM ${table} WHERE employee_id = ?`,
       [employeeId]
     );
     if (!employee) {
-      return res.status(404).json({ error: "Employee not found" });
+      return res.status(404).json({ error: `${userRole} not found` });
     }
 
     const [existingBank] = await queryAsync(
@@ -990,19 +1030,20 @@ const fetchEmployees = async (req, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+    const baseUrl =
+      process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     const deptHeads = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, blood_group, gender, emergency_phone, 'dept_head' as role,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, blood_group, gender, emergency_phone, dob, 'dept_head' as role,
           photo_url FROM dept_heads`,
       [baseUrl]
     );
     const managers = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, blood_group, gender, emergency_phone, join_date, 'manager' as role,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, blood_group, gender, emergency_phone, join_date, dob, 'manager' as role,
           photo_url FROM managers`,
       [baseUrl]
     );
     const employees = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, basic_salary, allowances, join_date, blood_group, gender, emergency_phone, 'employee' as role,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, basic_salary, allowances, join_date,dob, blood_group, gender, emergency_phone, 'employee' as role,
           photo_url FROM employees`,
       [baseUrl]
     );
@@ -1026,13 +1067,14 @@ const getEmployeeById = async (req, res) => {
   }
 
   try {
-    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+    const baseUrl =
+      process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     const tables = ["employees", "hrs", "dept_heads", "managers"];
     let employee = null;
 
     for (const table of tables) {
       const [result] = await queryAsync(
-        `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, blood_group, gender,
+        `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, blood_group, gender, dob,
                 CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url,
                 ? as role
          FROM ${table} WHERE id = ?`,
@@ -1126,30 +1168,31 @@ const getCurrentUserProfile = async (req, res) => {
 
   try {
     let query, table;
-    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+    const baseUrl =
+      process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     if (userRole === "super_admin") {
       table = "hrms_users";
-      query = `SELECT employee_id, full_name, email, mobile, emergency_phone, designation_name, gender,
+      query = `SELECT employee_id, full_name, email, mobile, emergency_phone, designation_name, gender, dob,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM hrms_users WHERE employee_id = ?`;
     } else if (userRole === "hr") {
       table = "hrs";
-      query = `SELECT employee_id, full_name, email, mobile, emergency_phone, department_name, designation_name, blood_group, gender,
+      query = `SELECT employee_id, full_name, email, mobile, emergency_phone, department_name, designation_name, blood_group, gender, dob, 
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM hrs WHERE employee_id = ?`;
     } else if (userRole === "dept_head") {
       table = "dept_heads";
-      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name,
+      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name, dob,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM dept_heads WHERE employee_id = ?`;
     } else if (userRole === "manager") {
       table = "managers";
-      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name,
+      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name, dob,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM managers WHERE employee_id = ?`;
     } else if (userRole === "employee") {
       table = "employees";
-      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name,
+      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name, dob,
                       CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
                FROM employees WHERE employee_id = ?`;
     } else {
@@ -1173,7 +1216,8 @@ const getCurrentUserProfile = async (req, res) => {
         designation_name: user.designation_name,
         department_name: user.department_name,
         blood_group: user.blood_group,
-        gender: user.gender, // Include gender
+        gender: user.gender,
+        dob: user.dob,
         photo_url: user.photo_url,
       },
     });
@@ -1186,6 +1230,7 @@ const getCurrentUserProfile = async (req, res) => {
 const getEmployeeProgress = async (req, res) => {
   const userRole = req.user.role;
   const userId = req.user.employee_id;
+  const employeeId = req.params.employeeId || userId;
 
   if (!["super_admin", "hr", "employee"].includes(userRole)) {
     return res
@@ -1193,22 +1238,64 @@ const getEmployeeProgress = async (req, res) => {
       .json({ error: "Access denied: Insufficient permissions" });
   }
 
+  if (userRole === "employee" && employeeId !== userId) {
+    return res
+      .status(403)
+      .json({ error: "Access denied: You can only view your own progress" });
+  }
+
+  // HR can view their own record + employees, but NOT other HRs
+  if (userRole === "hr" && employeeId !== userId) {
+    const [hrCheck] = await queryAsync(
+      `SELECT employee_id FROM hrs WHERE employee_id = ?`,
+      [employeeId]
+    );
+    if (hrCheck) {
+      return res
+        .status(403)
+        .json({
+          error: "Access denied: HR cannot view other HR users' progress",
+        });
+    }
+  }
+
   try {
+    // Check if user exists in any valid table
+    const [user] = await queryAsync(
+      `SELECT employee_id FROM (
+        SELECT employee_id FROM employees WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrs WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM dept_heads WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM managers WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrms_users WHERE employee_id = ?
+      ) AS all_users`,
+      [employeeId, employeeId, employeeId, employeeId, employeeId]
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Check progress across detail tables
     const [personalDetails] = await queryAsync(
       `SELECT employee_id FROM personal_details WHERE employee_id = ?`,
-      [userId]
+      [employeeId]
     );
     const [educationDetails] = await queryAsync(
       `SELECT employee_id FROM education_details WHERE employee_id = ?`,
-      [userId]
+      [employeeId]
     );
     const [bankDetails] = await queryAsync(
       `SELECT employee_id FROM bank_details WHERE employee_id = ?`,
-      [userId]
+      [employeeId]
     );
     const [documents] = await queryAsync(
       `SELECT employee_id FROM documents WHERE employee_id = ?`,
-      [userId]
+      [employeeId]
     );
 
     const progress = {
@@ -1232,13 +1319,33 @@ const getEmployeePersonalDetails = async (req, res) => {
   const userRole = req.user.role;
   const { employeeId } = req.params;
 
-  if (!["super_admin", "hr"].includes(userRole)) {
+  if (userRole !== "super_admin") {
     return res
       .status(403)
-      .json({ error: "Access denied: Insufficient permissions" });
+      .json({
+        error: "Access denied: Only super_admins can view personal details",
+      });
   }
 
   try {
+    const [user] = await queryAsync(
+      `SELECT employee_id FROM (
+        SELECT employee_id FROM employees WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrs WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM dept_heads WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM managers WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrms_users WHERE employee_id = ?
+      ) AS all_users`,
+      [employeeId, employeeId, employeeId, employeeId, employeeId]
+    );
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const [personalDetails] = await queryAsync(
       `SELECT employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
               present_address, previous_address, position_type, employer_id_name, position_title,
@@ -1265,13 +1372,33 @@ const getEmployeeEducationDetails = async (req, res) => {
   const userRole = req.user.role;
   const { employeeId } = req.params;
 
-  if (!["super_admin", "hr"].includes(userRole)) {
+  if (userRole !== "super_admin") {
     return res
       .status(403)
-      .json({ error: "Access denied: Insufficient permissions" });
+      .json({
+        error: "Access denied: Only super_admins can view education details",
+      });
   }
 
   try {
+    const [user] = await queryAsync(
+      `SELECT employee_id FROM (
+        SELECT employee_id FROM employees WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrs WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM dept_heads WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM managers WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrms_users WHERE employee_id = ?
+      ) AS all_users`,
+      [employeeId, employeeId, employeeId, employeeId, employeeId]
+    );
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const [educationDetails] = await queryAsync(
       `SELECT employee_id, tenth_class_name, tenth_class_marks, intermediate_name,
               intermediate_marks, graduation_name, graduation_marks, postgraduation_name,
@@ -1298,13 +1425,32 @@ const getEmployeeDocuments = async (req, res) => {
   const userRole = req.user.role;
   const { employeeId } = req.params;
 
-  if (!["super_admin", "hr"].includes(userRole)) {
+  if (userRole !== "super_admin") {
     return res
       .status(403)
-      .json({ error: "Access denied: Insufficient permissions" });
+      .json({ error: "Access denied: Only super_admins can view documents" });
   }
 
   try {
+    // Check if the employeeId exists in any relevant table
+    const [user] = await queryAsync(
+      `SELECT employee_id FROM (
+        SELECT employee_id FROM employees WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrs WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM dept_heads WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM managers WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrms_users WHERE employee_id = ?
+      ) AS all_users`,
+      [employeeId, employeeId, employeeId, employeeId, employeeId]
+    );
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const documents = await queryAsync(
       `SELECT id, employee_id, document_type, file_path, file_type
        FROM documents WHERE employee_id = ?`,
@@ -1325,13 +1471,34 @@ const getEmployeeBankDetails = async (req, res) => {
   const userRole = req.user.role;
   const { employeeId } = req.params;
 
-  if (!["super_admin", "hr"].includes(userRole)) {
+  if (userRole !== "super_admin") {
     return res
       .status(403)
-      .json({ error: "Access denied: Insufficient permissions" });
+      .json({
+        error: "Access denied: Only super_admins can view bank details",
+      });
   }
 
   try {
+    // Check if the employeeId exists in any relevant table
+    const [user] = await queryAsync(
+      `SELECT employee_id FROM (
+        SELECT employee_id FROM employees WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrs WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM dept_heads WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM managers WHERE employee_id = ?
+        UNION
+        SELECT employee_id FROM hrms_users WHERE employee_id = ?
+      ) AS all_users`,
+      [employeeId, employeeId, employeeId, employeeId, employeeId]
+    );
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const [bankDetails] = await queryAsync(
       `SELECT employee_id, bank_account_number, ifsc_number
        FROM bank_details WHERE employee_id = ?`,
@@ -1351,7 +1518,7 @@ const getEmployeeBankDetails = async (req, res) => {
     res.status(500).json({ error: "Database error" });
   }
 };
-  
+
 module.exports = {
   createEmployee,
   createEmployeePersonalDetails,

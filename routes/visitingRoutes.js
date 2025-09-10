@@ -5,4 +5,5 @@ const router = express.Router();
 
 
 router.get('/download/:emploeeIs/:style', authenticateToken, downloadSingleCard);
+
  module.exports = router;

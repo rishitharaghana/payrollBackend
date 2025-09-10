@@ -3,6 +3,7 @@ const pool = require("../config/db");
 const util = require("util");
 const path = require("path");
 const fs = require("fs");
+
 const queryAsync = util.promisify(pool.query).bind(pool);
 
 const COMPANY_CONFIG = {
@@ -18,6 +19,85 @@ const formatCurrency = (value) => {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+};
+
+const calculateLeaveAndAttendance = async (employeeId, month) => {
+  const [year, monthNum] = month.split("-").map(Number);
+  const startDate = new Date(year, monthNum - 1, 1);
+  const endDate = new Date(year, monthNum, 0);
+  const startDateStr = startDate.toISOString().split("T")[0];
+  const endDateStr = endDate.toISOString().split("T")[0];
+
+  try {
+    const holidays = await queryAsync(
+      "SELECT date FROM holidays WHERE date BETWEEN ? AND ?",
+      [startDateStr, endDateStr]
+    );
+    const holidayDates = holidays.map((h) => h.date.toISOString().split("T")[0]);
+
+    const leaves = await queryAsync(
+      `SELECT start_date, end_date, leave_type, leave_status, total_days 
+       FROM leaves 
+       WHERE employee_id = ? AND status = 'Approved' 
+       AND start_date <= ? AND end_date >= ?`,
+      [employeeId, endDateStr, startDateStr]
+    );
+
+    let paidLeaveDays = 0;
+    let unpaidLeaveDays = 0;
+    let leaveDetails = [];
+    for (const leave of leaves) {
+      const start = new Date(Math.max(new Date(leave.start_date), startDate));
+      const end = new Date(Math.min(new Date(leave.end_date), endDate));
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().split("T")[0];
+        const isHoliday = holidayDates.includes(dateStr);
+        const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+        if (!isHoliday && !isWeekend) {
+          if (leave.leave_status === "Unpaid") {
+            unpaidLeaveDays++;
+          } else {
+            paidLeaveDays++;
+          }
+        }
+      }
+      leaveDetails.push({
+        type: leave.leave_type,
+        days: leave.total_days,
+        start_date: leave.start_date,
+        end_date: leave.end_date,
+        status: leave.leave_status,
+      });
+    }
+
+    const attendance = await queryAsync(
+      `SELECT date FROM attendance 
+       WHERE employee_id = ? AND status = 'Present' 
+       AND date BETWEEN ? AND ?`,
+      [employeeId, startDateStr, endDateStr]
+    );
+    const presentDays = attendance.length;
+
+    let totalWorkingDays = 0;
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split("T")[0];
+      const isHoliday = holidayDates.includes(dateStr);
+      const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+      if (!isHoliday && !isWeekend) totalWorkingDays++;
+    }
+
+    return {
+      paidLeaveDays,
+      unpaidLeaveDays,
+      leaveDetails,
+      presentDays,
+      holidays: holidayDates.length,
+      totalWorkingDays,
+    };
+  } catch (err) {
+    console.error("Error in calculateLeaveAndAttendance:", err.message, err.sqlMessage);
+    throw new Error(`Failed to calculate leave and attendance: ${err.sqlMessage || err.message}`);
+  }
 };
 
 const validateMonth = (month) => {
@@ -173,16 +253,11 @@ const generatePayroll = async (req, res) => {
     validateMonth(month);
     const employees = await queryAsync(
       `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
-       FROM employees
-       UNION SELECT employee_id, full_name, NULL, basic_salary, allowances, bonuses, NULL
-       FROM hrs
-       UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
-       FROM dept_heads
-       UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
-       FROM managers`
+       FROM hrms_users
+       WHERE role IN ('employee', 'hr', 'dept_head', 'manager') AND status = 'active'`
     );
     if (!employees.length) {
-      return res.status(404).json({ error: "No employees found" });
+      return res.status(404).json({ error: "No active employees found" });
     }
 
     await queryAsync("DELETE FROM payroll WHERE month = ?", [month]);
@@ -192,23 +267,30 @@ const generatePayroll = async (req, res) => {
         console.warn(`Skipping employee ${emp.employee_id} due to missing salary data`);
         continue;
       }
+
+      const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays } = await calculateLeaveAndAttendance(emp.employee_id, month);
+
       const gross_salary =
         parseFloat(emp.basic_salary || 0) +
         parseFloat(emp.allowances || 0) +
         parseFloat(emp.bonuses || 0);
-      const pf_deduction = Math.min(gross_salary * 0.12, 1800);
-      const esic_deduction = gross_salary <= 21000 ? gross_salary * 0.0075 : 0;
-      const professional_tax = gross_salary <= 15000 ? 0 : 200;
-      const tax_deduction = calculateTax(gross_salary);
+      const dailyRate = gross_salary / totalWorkingDays;
+      const salaryAdjustment = unpaidLeaveDays * dailyRate;
+
+      const adjustedGrossSalary = gross_salary - salaryAdjustment;
+      const pf_deduction = Math.min(adjustedGrossSalary * 0.12, 1800);
+      const esic_deduction = adjustedGrossSalary <= 21000 ? adjustedGrossSalary * 0.0075 : 0;
+      const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
+      const tax_deduction = calculateTax(adjustedGrossSalary);
       const net_salary =
-        gross_salary - (pf_deduction + esic_deduction + professional_tax + tax_deduction);
+        adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction);
 
       const payrollData = {
         employee_id: emp.employee_id,
         employee_name: emp.full_name,
         department: emp.department_name || "HR",
         designation_name: emp.designation_name || null,
-        gross_salary,
+        gross_salary: adjustedGrossSalary,
         pf_deduction,
         esic_deduction,
         professional_tax,
@@ -224,6 +306,11 @@ const generatePayroll = async (req, res) => {
         month,
         created_by: req.user.employee_id,
         company_id: COMPANY_CONFIG.company_id,
+        paid_leave_days: paidLeaveDays,
+        unpaid_leave_days: unpaidLeaveDays,
+        present_days: presentDays,
+        holidays: holidays,
+        total_working_days: totalWorkingDays,
       };
       await queryAsync("INSERT INTO payroll SET ?", payrollData);
       payrolls.push(payrollData);
@@ -262,18 +349,13 @@ const generatePayrollForEmployee = async (req, res) => {
   try {
     validateMonth(month);
     const [employee] = await queryAsync(
-      `SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses, designation_name
-       FROM employees WHERE employee_id = ?
-       UNION SELECT employee_id, full_name, NULL, basic_salary, allowances, bonuses, NULL
-       FROM hrs WHERE employee_id = ?
-       UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
-       FROM dept_heads WHERE employee_id = ?
-       UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
-       FROM managers WHERE employee_id = ?`,
-      [employeeId, employeeId, employeeId, employeeId]
+      `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
+       FROM hrms_users
+       WHERE employee_id = ? AND status = 'active'`,
+      [employeeId]
     );
     if (!employee) {
-      return res.status(404).json({ error: "Employee not found" });
+      return res.status(404).json({ error: "Employee not found or inactive" });
     }
     if (!employee.basic_salary) {
       return res.status(400).json({ error: "Employee has no salary data" });
@@ -289,6 +371,8 @@ const generatePayrollForEmployee = async (req, res) => {
       });
     }
 
+    const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays } = await calculateLeaveAndAttendance(employeeId, month);
+
     const [bankDetails] = await queryAsync(
       `SELECT bank_account_number, ifsc_number FROM bank_details WHERE employee_id = ?`,
       [employeeId]
@@ -298,19 +382,23 @@ const generatePayrollForEmployee = async (req, res) => {
       (parseFloat(employee.basic_salary) || 0) +
       (parseFloat(employee.allowances) || 0) +
       (parseFloat(employee.bonuses) || 0);
-    const pf_deduction = Math.min(gross_salary * 0.12, 1800);
-    const esic_deduction = gross_salary <= 21000 ? gross_salary * 0.0075 : 0;
-    const professional_tax = gross_salary <= 15000 ? 0 : 200;
-    const tax_deduction = calculateTax(gross_salary);
+    const dailyRate = gross_salary / totalWorkingDays;
+    const salaryAdjustment = unpaidLeaveDays * dailyRate;
+
+    const adjustedGrossSalary = gross_salary - salaryAdjustment;
+    const pf_deduction = Math.min(adjustedGrossSalary * 0.12, 1800);
+    const esic_deduction = adjustedGrossSalary <= 21000 ? adjustedGrossSalary * 0.0075 : 0;
+    const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
+    const tax_deduction = calculateTax(adjustedGrossSalary);
     const net_salary =
-      gross_salary - (pf_deduction + esic_deduction + professional_tax + tax_deduction);
+      adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction);
 
     const payrollData = {
       employee_id: employeeId,
       employee_name: employee.full_name,
-      department: employee.department || "HR",
+      department: employee.department_name || "HR",
       designation_name: employee.designation_name || null,
-      gross_salary,
+      gross_salary: adjustedGrossSalary,
       net_salary,
       pf_deduction,
       esic_deduction,
@@ -326,6 +414,11 @@ const generatePayrollForEmployee = async (req, res) => {
       month,
       created_by: userId,
       company_id: COMPANY_CONFIG.company_id,
+      paid_leave_days: paidLeaveDays,
+      unpaid_leave_days: unpaidLeaveDays,
+      present_days: presentDays,
+      holidays: holidays,
+      total_working_days: totalWorkingDays,
     };
 
     const result = await queryAsync("INSERT INTO payroll SET ?", payrollData);
@@ -354,15 +447,10 @@ const downloadPayrollPDF = async (req, res) => {
   try {
     validateMonth(month);
     let query = `
-      SELECT p.*, e.full_name AS employee_name, COALESCE(e.department_name, 'HR') AS department,
-             e.designation_name
+      SELECT p.*, u.full_name AS employee_name, COALESCE(u.department_name, 'HR') AS department,
+             u.designation_name
       FROM payroll p
-      JOIN (
-        SELECT employee_id, full_name, department_name, designation_name FROM employees
-        UNION SELECT employee_id, full_name, NULL, NULL FROM hrs
-        UNION SELECT employee_id, full_name, department_name, designation_name FROM dept_heads
-        UNION SELECT employee_id, full_name, department_name, designation_name FROM managers
-      ) e ON p.employee_id = e.employee_id
+      JOIN hrms_users u ON p.employee_id = u.employee_id
       WHERE p.month = ?
     `;
     let params = [month];
@@ -581,4 +669,6 @@ module.exports = {
   generatePayroll,
   generatePayrollForEmployee,
   downloadPayrollPDF,
+  calculateLeaveAndAttendance,
+
 };

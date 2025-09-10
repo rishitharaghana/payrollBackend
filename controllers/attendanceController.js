@@ -6,6 +6,7 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 const markAttendance = async (req, res) => {
   const { employee_id, date, login_time, logout_time, recipient, location } = req.body;
   const { role, id } = req.user;
+
   if (!employee_id || !date || !login_time || !recipient || !location) {
     return res.status(400).json({ error: 'Date, login time, recipient, and location are required' });
   }
@@ -30,13 +31,10 @@ const markAttendance = async (req, res) => {
   }
 
   try {
-    let userTable;
-    if (role === 'super_admin') userTable = 'hrms_users';
-    else if (role === 'hr') userTable = 'hrs';
-    else if (role === 'dept_head') userTable = 'dept_heads';
-    else userTable = 'employees';
-
-    const [user] = await queryAsync(`SELECT employee_id FROM ${userTable} WHERE id = ?`, [id]);
+    const [user] = await queryAsync(
+      `SELECT employee_id FROM hrms_users WHERE id = ? AND role = ?`,
+      [id, role]
+    );
     if (!user || (user.employee_id !== employee_id && !['super_admin', 'hr'].includes(role))) {
       return res.status(403).json({ error: 'Unauthorized to mark attendance for this employee' });
     }
@@ -82,13 +80,10 @@ const fetchEmployeeAttendance = async (req, res) => {
   const { role, id } = req.user;
 
   try {
-    let userTable;
-    if (role === 'super_admin') userTable = 'hrms_users';
-    else if (role === 'hr') userTable = 'hrs';
-    else if (role === 'dept_head') userTable = 'dept_heads';
-    else userTable = 'employees';
-
-    const [user] = await queryAsync(`SELECT employee_id, full_name FROM ${userTable} WHERE id = ?`, [id]);
+    const [user] = await queryAsync(
+      `SELECT employee_id, full_name FROM hrms_users WHERE id = ? AND role = ?`,
+      [id, role]
+    );
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -122,26 +117,23 @@ const fetchAllAttendance = async (req, res) => {
   try {
     let query = `
       SELECT a.id, a.employee_id, DATE_FORMAT(a.date, '%Y-%m-%d') AS date, a.login_time, a.logout_time, a.recipient, a.location, a.status, a.created_at,
-             COALESCE(e.full_name, h.full_name, d.full_name, u.full_name) AS employee_name,
-             COALESCE(e.department_name, d.department_name, h.department_name, u.department_name) AS department_name
+             u.full_name AS employee_name,
+             u.department_name AS department_name
       FROM attendance a
-      LEFT JOIN employees e ON a.employee_id = e.employee_id
-      LEFT JOIN hrs h ON a.employee_id = h.employee_id
-      LEFT JOIN dept_heads d ON a.employee_id = d.employee_id
       LEFT JOIN hrms_users u ON a.employee_id = u.employee_id
     `;
     let params = [];
 
     if (role === 'dept_head') {
       const [deptHead] = await queryAsync(
-        'SELECT department_name FROM dept_heads WHERE id = ?',
-        [id]
+        'SELECT department_name FROM hrms_users WHERE id = ? AND role = ?',
+        [id, 'dept_head']
       );
       if (!deptHead) {
         return res.status(403).json({ error: 'Access denied: Not a department head' });
       }
-      query += ' WHERE (e.department_name = ? OR d.department_name = ? OR h.department_name = ? OR u.department_name = ?) AND a.recipient = ? ORDER BY a.date DESC';
-      params = [deptHead.department_name, deptHead.department_name, deptHead.department_name, deptHead.department_name, 'hr'];
+      query += ' WHERE u.department_name = ? AND a.recipient = ? ORDER BY a.date DESC';
+      params = [deptHead.department_name, 'hr'];
     } else {
       query += ' WHERE a.recipient = ? ORDER BY a.date DESC';
       params = [role];
@@ -213,8 +205,8 @@ const getEmployeeAverageWorkingHours = async (req, res) => {
 
   if (role === 'employee') {
     const [user] = await queryAsync(
-      `SELECT employee_id FROM employees WHERE id = ?`,
-      [id]
+      `SELECT employee_id FROM hrms_users WHERE id = ? AND role = ?`,
+      [id, 'employee']
     );
     if (!user || user.employee_id !== employeeId) {
       return res.status(403).json({
@@ -225,13 +217,9 @@ const getEmployeeAverageWorkingHours = async (req, res) => {
 
   try {
     const [employee] = await queryAsync(
-      `SELECT COALESCE(e.full_name, h.full_name, d.full_name, u.full_name, 'Unknown') AS employee_name
-       FROM attendance a
-       LEFT JOIN employees e ON a.employee_id = e.employee_id
-       LEFT JOIN hrs h ON a.employee_id = h.employee_id
-       LEFT JOIN dept_heads d ON a.employee_id = d.employee_id
-       LEFT JOIN hrms_users u ON a.employee_id = u.employee_id
-       WHERE a.employee_id = ? LIMIT 1`,
+      `SELECT full_name AS employee_name
+       FROM hrms_users
+       WHERE employee_id = ? LIMIT 1`,
       [employeeId]
     );
     if (!employee) {
@@ -299,7 +287,6 @@ const getEmployeeAverageWorkingHours = async (req, res) => {
   }
 };
 
-
 const getAllEmployeesTotalWorkingHours = async (req, res) => {
   const { role, id } = req.user;
   const { start_date, end_date } = req.query;
@@ -312,13 +299,10 @@ const getAllEmployeesTotalWorkingHours = async (req, res) => {
     let query = `
       SELECT 
         a.employee_id,
-        COALESCE(e.full_name, h.full_name, d.full_name, u.full_name, 'Unknown') AS employee_name,
-        COALESCE(e.department_name, d.department_name, h.department_name, u.department_name, 'N/A') AS department_name,
+        u.full_name AS employee_name,
+        u.department_name AS department_name,
         COALESCE(CAST(SUM(TIMESTAMPDIFF(SECOND, a.login_time, a.logout_time) / 3600) AS DECIMAL(10,2)), 0) AS total_working_hours
       FROM attendance a
-      LEFT JOIN employees e ON a.employee_id = e.employee_id
-      LEFT JOIN hrs h ON a.employee_id = h.employee_id
-      LEFT JOIN dept_heads d ON a.employee_id = d.employee_id
       LEFT JOIN hrms_users u ON a.employee_id = u.employee_id
       WHERE a.status = 'Approved' 
         AND a.login_time IS NOT NULL 
@@ -333,20 +317,19 @@ const getAllEmployeesTotalWorkingHours = async (req, res) => {
 
     if (role === 'dept_head') {
       const [deptHead] = await queryAsync(
-        'SELECT department_name FROM dept_heads WHERE id = ?',
-        [id]
+        'SELECT department_name FROM hrms_users WHERE id = ? AND role = ?',
+        [id, 'dept_head']
       );
       if (!deptHead) {
         return res.status(403).json({ error: 'Access denied: Not a department head' });
       }
-      query += ' AND (e.department_name = ? OR d.department_name = ? OR h.department_name = ? OR u.department_name = ?)';
-      params.push(deptHead.department_name, deptHead.department_name, deptHead.department_name, deptHead.department_name);
+      query += ' AND u.department_name = ?';
+      params.push(deptHead.department_name);
     }
 
-    query += ' GROUP BY a.employee_id, employee_name, department_name';
+    query += ' GROUP BY a.employee_id, u.full_name, u.department_name';
 
     const attendance = await queryAsync(query, params);
-    console.log('Raw attendance data for all employees:', attendance); // Debug
 
     const result = attendance.map(record => ({
       employee_id: record.employee_id,
@@ -364,7 +347,6 @@ const getAllEmployeesTotalWorkingHours = async (req, res) => {
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
-
 
 const getTotalAverageWorkingHours = async (req, res) => {
   const { role } = req.user;
@@ -395,7 +377,7 @@ const getTotalAverageWorkingHours = async (req, res) => {
     query += ' GROUP BY a.date ORDER BY a.date';
 
     const attendance = await queryAsync(query, params);
-    console.log('Raw attendance data for total average:', attendance); // Debug
+    console.log('Raw attendance data for total average:', attendance); 
 
     if (attendance.length === 0) {
       return res.status(200).json({
@@ -434,6 +416,47 @@ const getTotalAverageWorkingHours = async (req, res) => {
   }
 };
 
+const getDetailedAttendance = async (req, res) => {
+  const { employee_id, start_date, end_date } = req.body;
+  try {
+    if (!req.user || !['employee', 'dept_head', 'hr', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+    }
+    if (req.user.role === 'employee' && req.user.employee_id !== employee_id) {
+      return res.status(403).json({ error: 'Access denied: Can only view own report' });
+    }
+
+    const query = `
+      SELECT date, check_in, check_out, hours_worked AS hours,
+             status, notes
+      FROM attendance
+      WHERE employee_id = ? AND date BETWEEN ? AND ?
+      ORDER BY date DESC
+    `;
+    const [records] = await pool.query(query, [employee_id, start_date, end_date]);
+
+    const summaryQuery = `
+      SELECT 
+        COALESCE(SUM(hours_worked), 0) AS total_hours,
+        COALESCE(AVG(CASE WHEN status = 'Present' THEN 1 ELSE 0 END) * 100, 0) AS attendance_rate,
+        COALESCE(SUM(CASE WHEN status = 'Absent' THEN 1 ELSE 0 END), 0) AS absences
+      FROM attendance
+      WHERE employee_id = ? AND date BETWEEN ? AND ?
+    `;
+    const [summary] = await pool.query(summaryQuery, [employee_id, start_date, end_date]);
+
+    res.json({
+      records,
+      total_hours: summary[0].total_hours,
+      attendance_rate: summary[0].attendance_rate,
+      absences: summary[0].absences,
+    });
+  } catch (error) {
+    console.error('Error fetching detailed attendance:', error);
+    res.status(500).json({ error: 'An error occurred while fetching the report.' });
+  }
+};
+
 module.exports = {
   markAttendance,
   fetchEmployeeAttendance,
@@ -442,4 +465,5 @@ module.exports = {
   getEmployeeAverageWorkingHours,
   getAllEmployeesTotalWorkingHours,
   getTotalAverageWorkingHours,
+  getDetailedAttendance,
 };

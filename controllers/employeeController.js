@@ -24,25 +24,9 @@ const upload = createMulterInstance(uploadDir, allowedTypes, {
 const generateEmployeeId = async () => {
   const prefix = "MO-EMP-";
   const [lastEmployee] = await queryAsync(
-    `SELECT employee_id FROM (
-      SELECT employee_id FROM employees WHERE employee_id LIKE ?
-      UNION
-      SELECT employee_id FROM hrs WHERE employee_id LIKE ?
-      UNION
-      SELECT employee_id FROM dept_heads WHERE employee_id LIKE ?
-      UNION
-      SELECT employee_id FROM managers WHERE employee_id LIKE ?
-      UNION
-      SELECT employee_id FROM hrms_users WHERE employee_id LIKE ?
-    ) AS all_employees ORDER BY CAST(SUBSTRING(employee_id, LENGTH(?) + 1) AS UNSIGNED) DESC LIMIT 1`,
-    [
-      `${prefix}%`,
-      `${prefix}%`,
-      `${prefix}%`,
-      `${prefix}%`,
-      `${prefix}%`,
-      prefix,
-    ]
+    `SELECT employee_id FROM hrms_users WHERE employee_id LIKE ? 
+     ORDER BY CAST(SUBSTRING(employee_id, LENGTH(?) + 1) AS UNSIGNED) DESC LIMIT 1`,
+    [`${prefix}%`, prefix]
   );
   return lastEmployee
     ? `${prefix}${String(
@@ -91,7 +75,6 @@ const createEmployee = async (req, res) => {
     } = req.body;
     const photo = req.files?.["photo"]?.[0];
 
-    // Validation
     if (!photo) {
       console.error("No photo uploaded");
       return res.status(400).json({ error: "Photo is required" });
@@ -105,7 +88,6 @@ const createEmployee = async (req, res) => {
     if (userRole === "hr" && role === "hr") {
       return res.status(403).json({ error: "HR cannot create HR accounts" });
     }
-
     if (!name?.trim() || !email?.trim() || !mobile?.trim()) {
       return res
         .status(400)
@@ -155,15 +137,6 @@ const createEmployee = async (req, res) => {
       return res.status(400).json({ error: "Invalid gender" });
     }
 
-    const table =
-      role === "hr"
-        ? "hrs"
-        : role === "dept_head"
-        ? "dept_heads"
-        : role === "manager"
-        ? "managers"
-        : "employees";
-
     if (["dept_head", "employee", "manager"].includes(role)) {
       if (!department_name || !designation_name) {
         return res
@@ -196,31 +169,15 @@ const createEmployee = async (req, res) => {
 
     try {
       const [existingMobile] = await queryAsync(
-        `SELECT mobile FROM (
-          SELECT mobile FROM employees WHERE TRIM(mobile) = ?
-          UNION
-          SELECT mobile FROM hrs WHERE TRIM(mobile) = ?
-          UNION
-          SELECT mobile FROM dept_heads WHERE TRIM(mobile) = ?
-          UNION
-          SELECT mobile FROM managers WHERE TRIM(mobile) = ?
-          UNION
-          SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ?
-        ) AS all_users`,
-        [
-          mobile.trim(),
-          mobile.trim(),
-          mobile.trim(),
-          mobile.trim(),
-          mobile.trim(),
-        ]
+        `SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ?`,
+        [mobile.trim()]
       );
       if (existingMobile) {
         return res.status(400).json({ error: "Mobile number already in use" });
       }
 
       const [existingEmail] = await queryAsync(
-        `SELECT email FROM ${table} WHERE TRIM(LOWER(email)) = ?`,
+        `SELECT email FROM hrms_users WHERE TRIM(LOWER(email)) = ?`,
         [email.trim().toLowerCase()]
       );
       if (existingEmail) {
@@ -237,93 +194,30 @@ const createEmployee = async (req, res) => {
       console.log("DOB value before insertion:", dob);
       console.log("Join date before insertion:", join_date);
 
-      let query, values;
-      if (role === "hr") {
-        query = `INSERT INTO hrs (employee_id, full_name, email, mobile, password, is_temporary_password, basic_salary, allowances, bonuses, blood_group, dob, gender, join_date, photo_url)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-        values = [
-          employeeId,
-          name,
-          email,
-          mobile,
-          hashedPassword,
-          true,
-          basic_salary || 0,
-          allowances || 0,
-          bonuses || 0,
-          blood_group || null,
-          dob || null,
-          gender || null,
-          join_date || null,
-          photo_url,
-        ];
-      } else if (role === "dept_head") {
-        query = `INSERT INTO dept_heads (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password, basic_salary, allowances, bonuses, blood_group, dob, gender, join_date, photo_url)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-        values = [
-          employeeId,
-          name,
-          email,
-          mobile,
-          hashedPassword,
-          department_name,
-          designation_name,
-          true,
-          basic_salary || 0,
-          allowances || 0,
-          bonuses || 0,
-          blood_group || null,
-          dob || null,
-          gender || null,
-          join_date || null,
-          photo_url,
-        ];
-      } else if (role === "manager") {
-        query = `INSERT INTO managers (employee_id, full_name, email, mobile, password, department_name, designation_name, is_temporary_password, basic_salary, allowances, bonuses, blood_group, dob, gender, join_date, photo_url)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-        values = [
-          employeeId,
-          name,
-          email,
-          mobile,
-          hashedPassword,
-          department_name,
-          designation_name,
-          true,
-          basic_salary || 0,
-          allowances || 0,
-          bonuses || 0,
-          blood_group || null,
-          dob || null,
-          gender || null,
-          join_date || null,
-          photo_url,
-        ];
-      } else {
-        query = `INSERT INTO employees (employee_id, full_name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, bonuses, join_date, is_temporary_password, blood_group, dob, gender, photo_url)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-        values = [
-          employeeId,
-          name,
-          email,
-          mobile,
-          emergency_phone || null,
-          address || null,
-          hashedPassword,
-          department_name,
-          designation_name,
-          employment_type,
-          basic_salary || 0,
-          allowances || 0,
-          bonuses || 0,
-          join_date || null,
-          true,
-          blood_group || null,
-          dob || null,
-          gender || null,
-          photo_url,
-        ];
-      }
+      const query = `INSERT INTO hrms_users (employee_id, full_name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, bonuses, join_date, is_temporary_password, blood_group, dob, gender, photo_url, role)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      const values = [
+        employeeId,
+        name,
+        email,
+        mobile,
+        emergency_phone || null,
+        address || null,
+        hashedPassword,
+        department_name || null,
+        designation_name || null,
+        employment_type || null,
+        basic_salary || 0,
+        allowances || 0,
+        bonuses || 0,
+        join_date || null,
+        true,
+        blood_group || null,
+        dob || null,
+        gender || null,
+        photo_url,
+        role,
+      ];
 
       console.log("Insert query:", query);
       console.log("Insert values:", values);
@@ -333,7 +227,7 @@ const createEmployee = async (req, res) => {
 
       // Fetch the inserted record to verify DOB and join_date
       const [insertedRecord] = await queryAsync(
-        `SELECT dob, join_date FROM ${table} WHERE employee_id = ?`,
+        `SELECT dob, join_date FROM hrms_users WHERE employee_id = ?`,
         [employeeId]
       );
       console.log("Inserted record DOB:", insertedRecord?.dob);
@@ -357,12 +251,10 @@ const createEmployee = async (req, res) => {
           gender: gender || null,
           join_date: insertedRecord?.join_date || null,
           photo_url,
-          ...(role === "dept_head" || role === "manager"
+          ...(role === "dept_head" || role === "manager" || role === "employee"
             ? { department_name, designation_name }
             : {}),
-          ...(role === "employee"
-            ? { department_name, designation_name, employment_type, join_date }
-            : {}),
+          ...(role === "employee" ? { employment_type, join_date } : {}),
         },
       });
     } catch (err) {
@@ -438,26 +330,17 @@ const updateEmployee = async (req, res) => {
       return res.status(400).json({ error: "Invalid gender" });
     }
 
-    const table =
-      role === "hr"
-        ? "hrs"
-        : role === "dept_head"
-        ? "dept_heads"
-        : role === "manager"
-        ? "managers"
-        : "employees";
-
     try {
       const [existingRecord] = await queryAsync(
-        `SELECT * FROM ${table} WHERE id = ?`,
-        [id]
+        `SELECT * FROM hrms_users WHERE id = ? AND role = ?`,
+        [id, role]
       );
       if (!existingRecord) {
         return res.status(404).json({ error: `${role} record not found` });
       }
 
       const [emailCheck] = await queryAsync(
-        `SELECT * FROM ${table} WHERE email = ? AND id != ?`,
+        `SELECT * FROM hrms_users WHERE email = ? AND id != ?`,
         [email, id]
       );
       if (emailCheck) {
@@ -467,43 +350,22 @@ const updateEmployee = async (req, res) => {
       }
 
       const [mobileCheck] = await queryAsync(
-        `SELECT mobile FROM (
-          SELECT mobile FROM employees WHERE TRIM(mobile) = ? AND id != ?
-          UNION
-          SELECT mobile FROM hrs WHERE TRIM(mobile) = ? AND id != ?
-          UNION
-          SELECT mobile FROM dept_heads WHERE TRIM(mobile) = ? AND id != ?
-          UNION
-          SELECT mobile FROM managers WHERE TRIM(mobile) = ? AND id != ?
-          UNION
-          SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ? AND id != ?
-        ) AS all_users`,
-        [
-          mobile.trim(),
-          id,
-          mobile.trim(),
-          id,
-          mobile.trim(),
-          id,
-          mobile.trim(),
-          id,
-          mobile.trim(),
-          id,
-        ]
+        `SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ? AND id != ?`,
+        [mobile.trim(), id]
       );
       if (mobileCheck) {
         return res.status(400).json({ error: "Mobile number already in use" });
       }
 
       const baseUrl =
-        process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/"; // Fixed typo in baseUrl
+        process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
       const photo_url = photo
         ? `${baseUrl}${path.basename(photo.path)}`
         : req.body.photo === "null"
         ? null
         : existingRecord.photo_url;
 
-      const query = `UPDATE ${table} SET full_name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, blood_group = ?, gender = ?, photo_url = ? WHERE id = ?`;
+      const query = `UPDATE hrms_users SET full_name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, blood_group = ?, gender = ?, photo_url = ? WHERE id = ? AND role = ?`;
       const values = [
         name,
         email,
@@ -511,9 +373,10 @@ const updateEmployee = async (req, res) => {
         emergency_phone || null,
         address || null,
         blood_group || null,
-        gender || null, // Add gender
+        gender || null,
         photo_url,
         id,
+        role,
       ];
 
       const result = await queryAsync(query, values);
@@ -534,7 +397,7 @@ const updateEmployee = async (req, res) => {
           emergency_phone,
           address,
           blood_group,
-          gender, // Include gender in response
+          gender,
           photo_url,
         },
       });
@@ -600,9 +463,8 @@ const createEmployeePersonalDetails = async (req, res) => {
   }
 
   try {
-    const table = userRole === "hr" ? "hrs" : "employees";
     const [user] = await queryAsync(
-      `SELECT employee_id, full_name, email, mobile FROM ${table} WHERE employee_id = ?`,
+      `SELECT employee_id, full_name, email, mobile FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee')`,
       [employeeId]
     );
     if (!user) {
@@ -631,58 +493,16 @@ const createEmployeePersonalDetails = async (req, res) => {
     }
 
     const [existingMobile] = await queryAsync(
-      `SELECT mobile FROM (
-        SELECT mobile FROM employees WHERE TRIM(mobile) = ? AND employee_id != ?
-        UNION
-        SELECT mobile FROM hrs WHERE TRIM(mobile) = ? AND employee_id != ?
-        UNION
-        SELECT mobile FROM dept_heads WHERE TRIM(mobile) = ? AND employee_id != ?
-        UNION
-        SELECT mobile FROM managers WHERE TRIM(mobile) = ? AND employee_id != ?
-        UNION
-        SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ? AND employee_id != ?
-      ) AS all_users`,
-      [
-        phone.trim(),
-        employeeId,
-        phone.trim(),
-        employeeId,
-        phone.trim(),
-        employeeId,
-        phone.trim(),
-        employeeId,
-        phone.trim(),
-        employeeId,
-      ]
+      `SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ? AND employee_id != ?`,
+      [phone.trim(), employeeId]
     );
     if (existingMobile) {
       return res.status(400).json({ error: "Phone number already in use" });
     }
 
     const [existingEmail] = await queryAsync(
-      `SELECT email FROM (
-        SELECT email FROM employees WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
-        UNION
-        SELECT email FROM hrs WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
-        UNION
-        SELECT email FROM dept_heads WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
-        UNION
-        SELECT email FROM managers WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
-        UNION
-        SELECT email FROM hrms_users WHERE TRIM(LOWER(email)) = ? AND employee_id != ?
-      ) AS all_users`,
-      [
-        email.trim().toLowerCase(),
-        employeeId,
-        email.trim().toLowerCase(),
-        employeeId,
-        email.trim().toLowerCase(),
-        employeeId,
-        email.trim().toLowerCase(),
-        employeeId,
-        email.trim().toLowerCase(),
-        employeeId,
-      ]
+      `SELECT email FROM hrms_users WHERE TRIM(LOWER(email)) = ? AND employee_id != ?`,
+      [email.trim().toLowerCase(), employeeId]
     );
     if (existingEmail) {
       return res.status(400).json({ error: "Email already in use" });
@@ -692,7 +512,7 @@ const createEmployeePersonalDetails = async (req, res) => {
     if (userRole === "super_admin" && !user) {
       const hashedPassword = await bcrypt.hash(password, 10);
       const employeeQuery = `
-        INSERT INTO ${table} (employee_id, full_name, email, mobile, password, role, is_temporary_password)
+        INSERT INTO hrms_users (employee_id, full_name, email, mobile, password, role, is_temporary_password)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `;
       const employeeValues = [
@@ -801,9 +621,8 @@ const createEducationDetails = async (req, res) => {
   }
 
   try {
-    const table = userRole === "hr" ? "hrs" : "employees";
     const [employee] = await queryAsync(
-      `SELECT employee_id FROM ${table} WHERE UPPER(TRIM(employee_id)) = ?`,
+      `SELECT employee_id FROM hrms_users WHERE UPPER(TRIM(employee_id)) = ? AND role IN ('hr', 'employee')`,
       [normalizedBodyId]
     );
     if (!employee) {
@@ -897,9 +716,8 @@ const createDocuments = async (req, res) => {
     }
 
     try {
-      const table = userRole === "hr" ? "hrs" : "employees";
       const [employee] = await queryAsync(
-        `SELECT employee_id FROM ${table} WHERE employee_id = ?`,
+        `SELECT employee_id FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee')`,
         [employeeId]
       );
       if (!employee) {
@@ -911,7 +729,7 @@ const createDocuments = async (req, res) => {
       const fileExtension = path.extname(document.originalname).toLowerCase();
       const timestamp = Date.now();
       const safeFileName = `${employeeId}_${documentType}_${timestamp}${fileExtension}`;
-      const uploadDir = path.join(__dirname, "../uploads");
+      const uploadDir = path.join(__dirname, "../Uploads");
       const finalPath = path.join(uploadDir, safeFileName);
 
       fs.renameSync(document.path, finalPath);
@@ -986,9 +804,8 @@ const createBankDetails = async (req, res) => {
   }
 
   try {
-    const table = userRole === "hr" ? "hrs" : "employees";
     const [employee] = await queryAsync(
-      `SELECT employee_id, full_name FROM ${table} WHERE employee_id = ?`,
+      `SELECT employee_id, full_name FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee')`,
       [employeeId]
     );
     if (!employee) {
@@ -1032,24 +849,14 @@ const fetchEmployees = async (req, res) => {
 
     const baseUrl =
       process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
-    const deptHeads = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, blood_group, gender, emergency_phone, dob, 'dept_head' as role,
-          photo_url FROM dept_heads`,
-      [baseUrl]
-    );
-    const managers = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, blood_group, gender, emergency_phone, join_date, dob, 'manager' as role,
-          photo_url FROM managers`,
-      [baseUrl]
-    );
     const employees = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, basic_salary, allowances, join_date,dob, blood_group, gender, emergency_phone, 'employee' as role,
-          photo_url FROM employees`,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, basic_salary, allowances, join_date, dob, blood_group, gender, emergency_phone, role,
+              CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url 
+       FROM hrms_users WHERE role IN ('dept_head', 'manager', 'employee')`,
       [baseUrl]
     );
 
-    const allEmployees = [...deptHeads, ...managers, ...employees];
-    res.json({ message: "Employees fetched successfully", data: allEmployees });
+    res.json({ message: "Employees fetched successfully", data: employees });
   } catch (err) {
     console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: "Database error" });
@@ -1069,22 +876,13 @@ const getEmployeeById = async (req, res) => {
   try {
     const baseUrl =
       process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
-    const tables = ["employees", "hrs", "dept_heads", "managers"];
-    let employee = null;
-
-    for (const table of tables) {
-      const [result] = await queryAsync(
-        `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, blood_group, gender, dob,
-                CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url,
-                ? as role
-         FROM ${table} WHERE id = ?`,
-        [baseUrl, table, id]
-      );
-      if (result) {
-        employee = result;
-        break;
-      }
-    }
+    const [employee] = await queryAsync(
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, blood_group, gender, dob,
+              CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url,
+              role
+       FROM hrms_users WHERE id = ?`,
+      [baseUrl, id]
+    );
 
     if (!employee) {
       return res.status(404).json({ error: "Employee not found" });
@@ -1115,19 +913,10 @@ const deleteEmployee = async (req, res) => {
     return res.status(400).json({ error: "Role is required for deletion" });
   }
 
-  const table =
-    role === "hr"
-      ? "hrs"
-      : role === "dept_head"
-      ? "dept_heads"
-      : role === "manager"
-      ? "managers"
-      : "employees";
-
   try {
     const [existingRecord] = await queryAsync(
-      `SELECT photo_url FROM ${table} WHERE id = ?`,
-      [id]
+      `SELECT photo_url FROM hrms_users WHERE id = ? AND role = ?`,
+      [id, role]
     );
     if (!existingRecord) {
       return res
@@ -1137,7 +926,7 @@ const deleteEmployee = async (req, res) => {
 
     if (role === "employee") {
       const payrollCheck = await queryAsync(
-        "SELECT * FROM payroll WHERE employee_id = (SELECT employee_id FROM employees WHERE id = ?)",
+        "SELECT * FROM payroll WHERE employee_id = (SELECT employee_id FROM hrms_users WHERE id = ? AND role = 'employee')",
         [id]
       );
       if (payrollCheck.length > 0) {
@@ -1148,7 +937,10 @@ const deleteEmployee = async (req, res) => {
       }
     }
 
-    const result = await queryAsync(`DELETE FROM ${table} WHERE id = ?`, [id]);
+    const result = await queryAsync(
+      `DELETE FROM hrms_users WHERE id = ? AND role = ?`,
+      [id, role]
+    );
     if (result.affectedRows === 0) {
       return res
         .status(404)
@@ -1167,39 +959,12 @@ const getCurrentUserProfile = async (req, res) => {
   const userId = req.user.employee_id;
 
   try {
-    let query, table;
     const baseUrl =
       process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
-    if (userRole === "super_admin") {
-      table = "hrms_users";
-      query = `SELECT employee_id, full_name, email, mobile, emergency_phone, designation_name, gender, dob,
-                      CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
-               FROM hrms_users WHERE employee_id = ?`;
-    } else if (userRole === "hr") {
-      table = "hrs";
-      query = `SELECT employee_id, full_name, email, mobile, emergency_phone, department_name, designation_name, blood_group, gender, dob, 
-                      CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
-               FROM hrs WHERE employee_id = ?`;
-    } else if (userRole === "dept_head") {
-      table = "dept_heads";
-      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name, dob,
-                      CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
-               FROM dept_heads WHERE employee_id = ?`;
-    } else if (userRole === "manager") {
-      table = "managers";
-      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name, dob,
-                      CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
-               FROM managers WHERE employee_id = ?`;
-    } else if (userRole === "employee") {
-      table = "employees";
-      query = `SELECT employee_id, full_name, email, mobile, blood_group, gender, emergency_phone, department_name, designation_name, dob,
-                      CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
-               FROM employees WHERE employee_id = ?`;
-    } else {
-      return res.status(403).json({ error: "Invalid user role" });
-    }
-
-    const [user] = await queryAsync(query, [baseUrl, userId]);
+    const query = `SELECT employee_id, full_name, email, mobile, emergency_phone, department_name, designation_name, blood_group, gender, dob,
+                          CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
+                   FROM hrms_users WHERE employee_id = ? AND role = ?`;
+    const [user] = await queryAsync(query, [baseUrl, userId, userRole]);
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -1244,10 +1009,9 @@ const getEmployeeProgress = async (req, res) => {
       .json({ error: "Access denied: You can only view your own progress" });
   }
 
-  // HR can view their own record + employees, but NOT other HRs
   if (userRole === "hr" && employeeId !== userId) {
     const [hrCheck] = await queryAsync(
-      `SELECT employee_id FROM hrs WHERE employee_id = ?`,
+      `SELECT employee_id FROM hrms_users WHERE employee_id = ? AND role = 'hr'`,
       [employeeId]
     );
     if (hrCheck) {
@@ -1260,27 +1024,15 @@ const getEmployeeProgress = async (req, res) => {
   }
 
   try {
-    // Check if user exists in any valid table
     const [user] = await queryAsync(
-      `SELECT employee_id FROM (
-        SELECT employee_id FROM employees WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrs WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM dept_heads WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM managers WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrms_users WHERE employee_id = ?
-      ) AS all_users`,
-      [employeeId, employeeId, employeeId, employeeId, employeeId]
+      `SELECT employee_id FROM hrms_users WHERE employee_id = ?`,
+      [employeeId]
     );
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // Check progress across detail tables
     const [personalDetails] = await queryAsync(
       `SELECT employee_id FROM personal_details WHERE employee_id = ?`,
       [employeeId]
@@ -1329,18 +1081,8 @@ const getEmployeePersonalDetails = async (req, res) => {
 
   try {
     const [user] = await queryAsync(
-      `SELECT employee_id FROM (
-        SELECT employee_id FROM employees WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrs WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM dept_heads WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM managers WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrms_users WHERE employee_id = ?
-      ) AS all_users`,
-      [employeeId, employeeId, employeeId, employeeId, employeeId]
+      `SELECT employee_id FROM hrms_users WHERE employee_id = ?`,
+      [employeeId]
     );
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -1382,18 +1124,8 @@ const getEmployeeEducationDetails = async (req, res) => {
 
   try {
     const [user] = await queryAsync(
-      `SELECT employee_id FROM (
-        SELECT employee_id FROM employees WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrs WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM dept_heads WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM managers WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrms_users WHERE employee_id = ?
-      ) AS all_users`,
-      [employeeId, employeeId, employeeId, employeeId, employeeId]
+      `SELECT employee_id FROM hrms_users WHERE employee_id = ?`,
+      [employeeId]
     );
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -1432,20 +1164,9 @@ const getEmployeeDocuments = async (req, res) => {
   }
 
   try {
-    // Check if the employeeId exists in any relevant table
     const [user] = await queryAsync(
-      `SELECT employee_id FROM (
-        SELECT employee_id FROM employees WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrs WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM dept_heads WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM managers WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrms_users WHERE employee_id = ?
-      ) AS all_users`,
-      [employeeId, employeeId, employeeId, employeeId, employeeId]
+      `SELECT employee_id FROM hrms_users WHERE employee_id = ?`,
+      [employeeId]
     );
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -1480,20 +1201,9 @@ const getEmployeeBankDetails = async (req, res) => {
   }
 
   try {
-    // Check if the employeeId exists in any relevant table
     const [user] = await queryAsync(
-      `SELECT employee_id FROM (
-        SELECT employee_id FROM employees WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrs WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM dept_heads WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM managers WHERE employee_id = ?
-        UNION
-        SELECT employee_id FROM hrms_users WHERE employee_id = ?
-      ) AS all_users`,
-      [employeeId, employeeId, employeeId, employeeId, employeeId]
+      `SELECT employee_id FROM hrms_users WHERE employee_id = ?`,
+      [employeeId]
     );
     if (!user) {
       return res.status(404).json({ error: "User not found" });

@@ -3,6 +3,7 @@ const pool = require("../config/db");
 const util = require("util");
 const path = require("path");
 const fs = require("fs");
+const { permission } = require("process");
 const queryAsync = util.promisify(pool.query).bind(pool);
 
 const COMPANY_CONFIG = {
@@ -240,7 +241,7 @@ const generatePayslip = async (req, res) => {
         p.hra, p.da, p.other_allowances, p.payment_method, p.payment_date, 
         p.status, p.created_by, p.paid_leave_days, p.unpaid_leave_days, p.present_days, p.holidays, p.total_working_days,
         u.full_name AS employee_name, COALESCE(u.department_name, 'HR') AS department, 
-        u.designation_name, pd.pan_number, pd.uan_number, 
+        u.designation_name, pd.pan_number, pd.uan_number, u.dob,
         b.bank_account_number, b.ifsc_number
       FROM payroll p
       JOIN hrms_users u ON p.employee_id = u.employee_id
@@ -262,6 +263,10 @@ const generatePayslip = async (req, res) => {
           error: `Payroll already exists for ${employeeId} in ${month}`,
         });
       }
+      const [userDetails] = await queryAsync(
+        `SELECT dob FROM hrms_users WHERE employee_id = ?`,
+        [employeeId]
+      );
       payroll = [
         {
           ...newPayroll,
@@ -269,17 +274,48 @@ const generatePayslip = async (req, res) => {
           company_pan: COMPANY_CONFIG.company_pan,
           company_gstin: COMPANY_CONFIG.company_gstin,
           address: COMPANY_CONFIG.address,
+          dob: userDetails?.dob || null,
         },
       ];
     }
 
     const employee = payroll[0];
-    const doc = new PDFDocument({ margin: 40, size: "A4" });
+
+    let userPassword = "default123"; 
+    if (employee.dob) {
+      const dobDate = new Date(employee.dob);
+      if (!isNaN(dobDate)) {
+        const day = String(dobDate.getDate()).padStart(2, "0");
+        const month = String(dobDate.getMonth() + 1).padStart(2, "0"); 
+        const year = dobDate.getFullYear();
+        userPassword = `${day}-${month}-${year}`; // e.g., 25-12-1990
+      } else {
+        console.warn(`Invalid DOB for employee ${employeeId}: ${employee.dob}`);
+      }
+    } else {
+      console.warn(`DOB missing for employee ${employeeId}. Using default password.`);
+    }
+
+    // Initialize PDF with DOB-based password
+    const doc = new PDFDocument({
+      margin: 40,
+      size: "A4",
+      permissions: {
+        modifying: false,
+        copying: false,
+        annotating: false,
+        printing: "lowResolution",
+      },
+      userPassword: userPassword,
+      ownerPassword: "owner123",
+    });
+
     const fileName = `Payslip_${employee.employee_id}_${month}.pdf`;
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
     doc.pipe(res);
 
+    // ... (rest of the PDF generation code remains unchanged)
     const logoPath = path.join(__dirname, "../public/images/company_logo.png");
     if (fs.existsSync(logoPath)) {
       doc.image(logoPath, 40, 30, { width: 80, height: 40 });
@@ -307,7 +343,11 @@ const generatePayslip = async (req, res) => {
       .font("Times-Bold")
       .fontSize(14)
       .fillColor("#1a3c7a")
-      .text(`Payslip for ${month}`, { width: 250 ,align: "center", underline: true });
+      .text(`Payslip for ${month}`, {
+        width: 250,
+        align: "center",
+        underline: true,
+      });
 
     doc.moveDown(2);
     const leftDetails = [
@@ -330,53 +370,53 @@ const generatePayslip = async (req, res) => {
       ],
     ];
 
-let y = doc.y;
+    let y = doc.y;
 
-leftDetails.forEach(([label, value]) => {
-  doc
-    .font("Times-Bold")
-    .fontSize(9)
-    .fillColor("#000")
-    .text(label, 50, y, { width: 85, align: "left" });
+    leftDetails.forEach(([label, value]) => {
+      doc
+        .font("Times-Bold")
+        .fontSize(9)
+        .fillColor("#000")
+        .text(label, 50, y, { width: 85, align: "left" });
 
-  doc
-    .font("Times-Bold")
-    .fontSize(9)
-    .fillColor("#000")
-    .text(":", 120, y, { width: 10, align: "center" });
+      doc
+        .font("Times-Bold")
+        .fontSize(9)
+        .fillColor("#000")
+        .text(":", 120, y, { width: 10, align: "center" });
 
-  doc
-    .font("Times-Roman")
-    .fontSize(9)
-    .fillColor("#333")
-    .text(value, 140, y, { width: 120, align: "left" });
+      doc
+        .font("Times-Roman")
+        .fontSize(9)
+        .fillColor("#333")
+        .text(value, 140, y, { width: 120, align: "left" });
 
-  y += 18;
-});
+      y += 18;
+    });
 
-y = doc.y - leftDetails.length * 18;
+    y = doc.y - leftDetails.length * 18;
 
-rightDetails.forEach(([label, value]) => {
-  doc
-    .font("Times-Bold")
-    .fontSize(9)
-    .fillColor("#000")
-    .text(label, 340, y, { width: 95, align: "left" });
+    rightDetails.forEach(([label, value]) => {
+      doc
+        .font("Times-Bold")
+        .fontSize(9)
+        .fillColor("#000")
+        .text(label, 340, y, { width: 95, align: "left" });
 
-  doc
-    .font("Times-Bold")
-    .fontSize(9)
-    .fillColor("#000")
-    .text(":", 410, y, { width: 10, align: "center" });
+      doc
+        .font("Times-Bold")
+        .fontSize(9)
+        .fillColor("#000")
+        .text(":", 410, y, { width: 10, align: "center" });
 
-  doc
-    .font("Times-Roman")
-    .fontSize(9)
-    .fillColor("#333")
-    .text(value, 430, y, { width: 120, align: "left" });
+      doc
+        .font("Times-Roman")
+        .fontSize(9)
+        .fillColor("#333")
+        .text(value, 430, y, { width: 120, align: "left" });
 
-  y += 18;
-});
+      y += 18;
+    });
 
     doc.moveDown(2);
     const startY = doc.y + 10;

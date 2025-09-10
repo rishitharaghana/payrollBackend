@@ -15,7 +15,7 @@ const COMPANY_CONFIG = {
 
 const formatCurrency = (value) => {
   const numValue = parseFloat(value) || 0;
-  return `₹${numValue.toLocaleString("en-IN", {
+  return `\u20B9${numValue.toLocaleString("en-IN", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -23,7 +23,8 @@ const formatCurrency = (value) => {
 
 const validateInput = (employeeId, month) => {
   if (!employeeId) throw new Error("Invalid employee ID");
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error("Invalid month format. Use YYYY-MM");
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))
+    throw new Error("Invalid month format. Use YYYY-MM");
   return true;
 };
 
@@ -34,19 +35,19 @@ const calculateTax = (gross) => {
   return gross * 0.3;
 };
 
-const generatePayrollForEmployee = async (employeeId, month, userRole, userId) => {
+const generatePayrollForEmployee = async (
+  employeeId,
+  month,
+  userRole,
+  userId
+) => {
   const [employee] = await queryAsync(
-    `SELECT employee_id, full_name, department_name as department, basic_salary, allowances, bonuses, designation_name
-     FROM employees WHERE employee_id = ?
-     UNION SELECT employee_id, full_name, NULL, basic_salary, allowances, bonuses, NULL
-     FROM hrs WHERE employee_id = ?
-     UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
-     FROM dept_heads WHERE employee_id = ?
-     UNION SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
-     FROM managers WHERE employee_id = ?`,
-    [employeeId, employeeId, employeeId, employeeId]
+    `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
+     FROM hrms_users
+     WHERE employee_id = ? AND status = 'active'`,
+    [employeeId]
   );
-  if (!employee) throw new Error("Employee not found");
+  if (!employee) throw new Error("Employee not found or inactive");
   if (!employee.basic_salary) throw new Error("Employee has no salary data");
 
   const [existingPayroll] = await queryAsync(
@@ -68,12 +69,14 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
   const esic_deduction = gross_salary <= 21000 ? gross_salary * 0.0075 : 0;
   const professional_tax = gross_salary <= 15000 ? 0 : 200;
   const tax_deduction = calculateTax(gross_salary);
-  const net_salary = gross_salary - (pf_deduction + esic_deduction + professional_tax + tax_deduction);
+  const net_salary =
+    gross_salary -
+    (pf_deduction + esic_deduction + professional_tax + tax_deduction);
 
   const payrollData = {
     employee_id: employeeId,
     employee_name: employee.full_name,
-    department: employee.department || "HR",
+    department: employee.department_name || "HR",
     designation_name: employee.designation_name || null,
     gross_salary,
     net_salary,
@@ -85,7 +88,12 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
     hra: (parseFloat(employee.allowances) || 0) * 0.4,
     da: (parseFloat(employee.allowances) || 0) * 0.5,
     other_allowances: (parseFloat(employee.allowances) || 0) * 0.1,
-    status: userRole === "employee" ? "Approved" : userRole === "super_admin" ? "Paid" : "Pending", // Set 'Approved' for employees
+    status:
+      userRole === "employee"
+        ? "Approved"
+        : userRole === "super_admin"
+        ? "Paid"
+        : "Pending",
     payment_method: bankDetails ? "Bank Transfer" : "Cash",
     payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
     month,
@@ -100,47 +108,110 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
 const numberToWords = (num) => {
   if (num === 0) return "zero";
   const a = [
-    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
-    "sixteen", "seventeen", "eighteen", "nineteen"
+    "",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
   ];
   const b = [
-    "", "", "twenty", "thirty", "forty", "fifty",
-    "sixty", "seventy", "eighty", "ninety"
+    "",
+    "",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
   ];
 
   const numToWords = (n) => {
     if (n < 20) return a[n];
     if (n < 100) return b[Math.floor(n / 10)] + (n % 10 ? " " + a[n % 10] : "");
-    if (n < 1000) return a[Math.floor(n / 100)] + " hundred" + (n % 100 ? " " + numToWords(n % 100) : "");
-    if (n < 100000) return numToWords(Math.floor(n / 1000)) + " thousand" + (n % 1000 ? " " + numToWords(n % 1000) : "");
-    if (n < 10000000) return numToWords(Math.floor(n / 100000)) + " lakh" + (n % 100000 ? " " + numToWords(n % 100000) : "");
-    return numToWords(Math.floor(n / 10000000)) + " crore" + (n % 10000000 ? " " + numToWords(n % 10000000) : "");
+    if (n < 1000)
+      return (
+        a[Math.floor(n / 100)] +
+        " hundred" +
+        (n % 100 ? " " + numToWords(n % 100) : "")
+      );
+    if (n < 100000)
+      return (
+        numToWords(Math.floor(n / 1000)) +
+        " thousand" +
+        (n % 1000 ? " " + numToWords(n % 1000) : "")
+      );
+    if (n < 10000000)
+      return (
+        numToWords(Math.floor(n / 100000)) +
+        " lakh" +
+        (n % 100000 ? " " + numToWords(n % 100000) : "")
+      );
+    return (
+      numToWords(Math.floor(n / 10000000)) +
+      " crore" +
+      (n % 10000000 ? " " + numToWords(n % 10000000) : "")
+    );
   };
 
-  return numToWords(num).trim();
+  return numToWords(Math.floor(num)).trim();
 };
 
 const drawTable = (doc, title, data, startX, startY) => {
-  const col1Width = 120, col2Width = 80, headerHeight = 20, rowHeight = 20;
+  const col1Width = 400,
+    col2Width = 80,
+    headerHeight = 22,
+    rowHeight = 20;
   let y = startY;
+
   doc.rect(startX, y, col1Width + col2Width, headerHeight).fill("#1a3c7a");
-  doc.fillColor("#fff").font("Helvetica-Bold").fontSize(10)
+  doc
+    .fillColor("#fff")
+    .font("Times-Bold")
+    .fontSize(10)
     .text(title, startX + 5, y + 5, { width: col1Width })
-    .text("Amount", startX + col1Width, y + 5, { width: col2Width, align: "right" });
+    .text("Amount", startX + col1Width - 25, y + 5, {
+      width: col2Width,
+      align: "right",
+    });
 
   y += headerHeight;
-  doc.fillColor("#000").font("Helvetica").fontSize(9);
 
-  data.forEach(([label, value]) => {
+  data.forEach(([label, value], i) => {
+    if (i % 2 === 0)
+      doc.rect(startX, y, col1Width + col2Width, rowHeight).fill("#f5f5f5");
+    doc.fillColor("#000").font("Times-Roman").fontSize(9);
     const isBold = label.includes("Total") || label.includes("Net Pay");
-    doc.font(isBold ? "Helvetica-Bold" : "Helvetica")
-      .text(label, startX + 5, y + 5, { width: col1Width });
-    doc.font(isBold ? "Helvetica-Bold" : "Helvetica")
-      .text(value, startX + col1Width, y + 5, { width: col2Width, align: "right" });
-    doc.moveTo(startX, y + rowHeight)
+    doc
+      .font(isBold ? "Times-Bold" : "Times-Roman")
+      .text(label, startX + 5, y + 5, { width: col1Width })
+      .text(value, startX + col1Width, y + 5, {
+        width: col2Width,
+        align: "right",
+      });
+
+    doc
+      .moveTo(startX, y + rowHeight)
       .lineTo(startX + col1Width + col2Width, y + rowHeight)
-      .strokeColor("#ddd").lineWidth(0.5).stroke();
+      .strokeColor("#ddd")
+      .lineWidth(0.5)
+      .stroke();
     y += rowHeight;
   });
 };
@@ -153,7 +224,9 @@ const generatePayslip = async (req, res) => {
     validateInput(employeeId, month);
 
     if (role === "employee" && employeeId !== employee_id) {
-      return res.status(403).json({ error: "Access denied: You can only view your own payslip" });
+      return res
+        .status(403)
+        .json({ error: "Access denied: You can only view your own payslip" });
     }
 
     if (!["super_admin", "hr", "employee"].includes(role)) {
@@ -165,20 +238,12 @@ const generatePayslip = async (req, res) => {
         p.employee_id, p.month, p.gross_salary, p.net_salary, p.pf_deduction, 
         p.esic_deduction, p.tax_deduction, p.professional_tax, p.basic_salary, 
         p.hra, p.da, p.other_allowances, p.payment_method, p.payment_date, 
-        p.status, p.created_by, e.full_name AS employee_name, COALESCE(e.department_name, 'HR') AS department, 
-        e.designation_name, pd.pan_number, pd.uan_number, 
-        b.bank_account_number, b.ifsc_number AS ifsc_code
+        p.status, p.created_by, p.paid_leave_days, p.unpaid_leave_days, p.present_days, p.holidays, p.total_working_days,
+        u.full_name AS employee_name, COALESCE(u.department_name, 'HR') AS department, 
+        u.designation_name, pd.pan_number, pd.uan_number, 
+        b.bank_account_number, b.ifsc_number
       FROM payroll p
-      JOIN (
-        SELECT employee_id, full_name, department_name, designation_name 
-        FROM employees 
-        UNION SELECT employee_id, full_name, NULL, NULL 
-        FROM hrs 
-        UNION SELECT employee_id, full_name, department_name, designation_name 
-        FROM dept_heads 
-        UNION SELECT employee_id, full_name, department_name, designation_name 
-        FROM managers
-      ) e ON p.employee_id = e.employee_id
+      JOIN hrms_users u ON p.employee_id = u.employee_id
       LEFT JOIN personal_details pd ON p.employee_id = pd.employee_id
       LEFT JOIN bank_details b ON p.employee_id = b.employee_id
       WHERE p.employee_id = ? AND p.month = ?`,
@@ -186,17 +251,26 @@ const generatePayslip = async (req, res) => {
     );
 
     if (!payroll.length) {
-      const newPayroll = await generatePayrollForEmployee(employeeId, month, role, employee_id);
+      const newPayroll = await generatePayrollForEmployee(
+        employeeId,
+        month,
+        role,
+        employee_id
+      );
       if (!newPayroll) {
-        return res.status(400).json({ error: `Payroll already exists for ${employeeId} in ${month}` });
+        return res.status(400).json({
+          error: `Payroll already exists for ${employeeId} in ${month}`,
+        });
       }
-      payroll = [{
-        ...newPayroll,
-        company_name: COMPANY_CONFIG.company_name,
-        company_pan: COMPANY_CONFIG.company_pan,
-        company_gstin: COMPANY_CONFIG.company_gstin,
-        address: COMPANY_CONFIG.address
-      }];
+      payroll = [
+        {
+          ...newPayroll,
+          company_name: COMPANY_CONFIG.company_name,
+          company_pan: COMPANY_CONFIG.company_pan,
+          company_gstin: COMPANY_CONFIG.company_gstin,
+          address: COMPANY_CONFIG.address,
+        },
+      ];
     }
 
     const employee = payroll[0];
@@ -211,14 +285,29 @@ const generatePayslip = async (req, res) => {
       doc.image(logoPath, 40, 30, { width: 80, height: 40 });
     }
 
-    doc.font("Helvetica-Bold").fontSize(18).fillColor("#1a3c7a")
+    doc
+      .font("Times-Bold")
+      .fontSize(18)
+      .fillColor("#1a3c7a")
       .text(COMPANY_CONFIG.company_name, 140, 30);
-    doc.font("Helvetica").fontSize(9).fillColor("#444")
+    doc
+      .font("Times-Roman")
+      .fontSize(9)
+      .fillColor("#444")
       .text(COMPANY_CONFIG.address, 140, 50, { width: 400 });
-    doc.fontSize(9)
-      .text(`PAN: ${COMPANY_CONFIG.company_pan}   GSTIN: ${COMPANY_CONFIG.company_gstin}`, 140, 65);
-    doc.moveDown(2).font("Helvetica-Bold").fontSize(14).fillColor("#1a3c7a")
-      .text(`Payslip for ${month}`, { align: "center", underline: true });
+    doc
+      .fontSize(9)
+      .text(
+        `PAN: ${COMPANY_CONFIG.company_pan}   GSTIN: ${COMPANY_CONFIG.company_gstin}`,
+        140,
+        65
+      );
+    doc
+      .moveDown(2)
+      .font("Times-Bold")
+      .fontSize(14)
+      .fillColor("#1a3c7a")
+      .text(`Payslip for ${month}`, { width: 250 ,align: "center", underline: true });
 
     doc.moveDown(2);
     const leftDetails = [
@@ -232,27 +321,62 @@ const generatePayslip = async (req, res) => {
       ["PAN", employee.pan_number || "-"],
       ["UAN", employee.uan_number || "-"],
       ["Bank A/C", employee.bank_account_number || "-"],
-      ["IFSC", employee.ifsc_code || "-"],
-      ["Payment Date", employee.payment_date ? new Date(employee.payment_date).toLocaleDateString("en-IN") : "-"],
+      ["IFSC", employee.ifsc_number || "-"],
+      [
+        "Payment Date",
+        employee.payment_date
+          ? new Date(employee.payment_date).toLocaleDateString("en-IN")
+          : "-",
+      ],
     ];
 
-    let y = doc.y;
-    leftDetails.forEach(([label, value]) => {
-      doc.font("Helvetica-Bold").fontSize(9).fillColor("#000")
-        .text(`${label} :`, 50, y, { width: 100 });
-      doc.font("Helvetica").fontSize(9).fillColor("#333")
-        .text(value, 150, y, { width: 120 });
-      y += 18;
-    });
+let y = doc.y;
 
-    y = doc.y - (leftDetails.length * 18);
-    rightDetails.forEach(([label, value]) => {
-      doc.font("Helvetica-Bold").fontSize(9).fillColor("#000")
-        .text(`${label} :`, 320, y, { width: 100 });
-      doc.font("Helvetica").fontSize(9).fillColor("#333")
-        .text(value, 420, y, { width: 120 });
-      y += 18;
-    });
+leftDetails.forEach(([label, value]) => {
+  doc
+    .font("Times-Bold")
+    .fontSize(9)
+    .fillColor("#000")
+    .text(label, 50, y, { width: 85, align: "left" });
+
+  doc
+    .font("Times-Bold")
+    .fontSize(9)
+    .fillColor("#000")
+    .text(":", 120, y, { width: 10, align: "center" });
+
+  doc
+    .font("Times-Roman")
+    .fontSize(9)
+    .fillColor("#333")
+    .text(value, 140, y, { width: 120, align: "left" });
+
+  y += 18;
+});
+
+y = doc.y - leftDetails.length * 18;
+
+rightDetails.forEach(([label, value]) => {
+  doc
+    .font("Times-Bold")
+    .fontSize(9)
+    .fillColor("#000")
+    .text(label, 340, y, { width: 95, align: "left" });
+
+  doc
+    .font("Times-Bold")
+    .fontSize(9)
+    .fillColor("#000")
+    .text(":", 410, y, { width: 10, align: "center" });
+
+  doc
+    .font("Times-Roman")
+    .fontSize(9)
+    .fillColor("#333")
+    .text(value, 430, y, { width: 120, align: "left" });
+
+  y += 18;
+});
 
     doc.moveDown(2);
     const startY = doc.y + 10;
@@ -268,35 +392,88 @@ const generatePayslip = async (req, res) => {
       ["ESIC", formatCurrency(employee.esic_deduction)],
       ["Professional Tax", formatCurrency(employee.professional_tax)],
       ["Income Tax", formatCurrency(employee.tax_deduction)],
-      ["Total Deductions", formatCurrency(
-        (employee.pf_deduction || 0) +
-        (employee.esic_deduction || 0) +
-        (employee.professional_tax || 0) +
-        (employee.tax_deduction || 0)
-      )],
+      [
+        "Total Deductions",
+        formatCurrency(
+          (employee.pf_deduction || 0) +
+            (employee.esic_deduction || 0) +
+            (employee.professional_tax || 0) +
+            (employee.tax_deduction || 0)
+        ),
+      ],
       ["Net Pay", formatCurrency(employee.net_salary)],
     ];
+    const attendanceSummary = [
+      ["Total Working Days", employee.total_working_days || 0],
+      ["Days Present", employee.present_days || 0],
+      ["Paid Leave Days", employee.paid_leave_days || 0],
+      ["Unpaid Leave Days", employee.unpaid_leave_days || 0],
+      ["Holidays", employee.holidays || 0],
+    ];
 
-    drawTable(doc, "Earnings", earnings, 50, startY);
-    drawTable(doc, "Deductions", deductions, 320, startY);
+    let tableY = startY;
+    drawTable(doc, "Earnings", earnings, 50, tableY);
+    tableY += earnings.length * 20 + 30;
 
-    doc.moveDown(6);
-    doc.font("Helvetica-Bold").fontSize(11).fillColor("#000")
-      .text(formatCurrency(employee.net_salary), { align: "center" });
-    doc.font("Helvetica").fontSize(9)
-      .text(numberToWords(employee.net_salary).replace(/^\w/, c => c.toUpperCase()), { align: "center" });
+    drawTable(doc, "Deductions", deductions, 50, tableY);
+    tableY += deductions.length * 20 + 30;
+
+    drawTable(doc, "Attendance Summary", attendanceSummary, 50, tableY);
+    tableY += attendanceSummary.length * 20 + 40;
+
+    doc
+      .font("Times-Bold")
+      .fontSize(12)
+      .fillColor("#000")
+      .text("Net Pay: " + formatCurrency(employee.net_salary), 0, tableY, {
+        align: "center",
+      });
+    doc.moveDown(1);
+
+    doc
+      .font("Times-Roman")
+      .fontSize(10)
+      .fillColor("#444")
+      .text(
+        numberToWords(employee.net_salary).replace(/^\w/, (c) =>
+          c.toUpperCase()
+        ),
+        0,
+        doc.y,
+        { align: "center" }
+      );
+
+    doc.moveDown(1);
+    doc
+      .font("Courier-Oblique")
+      .fontSize(8)
+      .fillColor("#666")
+      .text("This is a system-generated payslip.", 0, doc.y, {
+        align: "center",
+      });
 
     doc.moveDown(4);
-    doc.font("Helvetica").fontSize(9)
-      .text("Employer Signature", 50, doc.y, { width: 200, align: "left" })
-      .text("Employee Signature", 350, doc.y, { width: 200, align: "right" });
+    doc
+      .font("Times-Roman")
+      .fontSize(9)
+      .fillColor("#000")
+      .text("Employer Signature", 350, doc.y, { width: 200, align: "right" });
+
     doc.moveDown(2);
-    doc.moveTo(50, doc.y).lineTo(200, doc.y).stroke();
-    doc.moveTo(350, doc.y).lineTo(500, doc.y).stroke();
+    doc
+      .moveTo(400, doc.y)
+      .lineTo(550, doc.y)
+      .strokeColor("#000")
+      .lineWidth(0.5)
+      .stroke();
 
     doc.end();
   } catch (error) {
-    console.error(`Error generating payslip for employee ${employeeId}, month ${month}:`, error.message, error.sqlMessage);
+    console.error(
+      `Error generating payslip for employee ${employeeId}, month ${month}:`,
+      error.message,
+      error.sqlMessage
+    );
     res.status(error.message.includes("Invalid") ? 400 : 500).json({
       error: "Error generating payslip PDF",
       details: error.sqlMessage || error.message,
@@ -311,27 +488,18 @@ const getPayslips = async (req, res) => {
 
   try {
     let query = `
-      SELECT p.employee_id, p.month, e.full_name as employee, COALESCE(e.department_name, 'HR') as department, 
-             e.designation_name, p.net_salary as salary, p.status,
+      SELECT p.employee_id, p.month, u.full_name as employee, COALESCE(u.department_name, 'HR') as department, 
+             u.designation_name, p.net_salary as salary, p.status,
              p.basic_salary, p.hra, p.da, p.other_allowances, p.pf_deduction, 
-             p.esic_deduction, p.tax_deduction, p.professional_tax, p.payment_date
+             p.esic_deduction, p.tax_deduction, p.professional_tax, p.payment_date,
+             p.leave_days, p.present_days, p.holidays, p.total_working_days
       FROM payroll p
-      JOIN (
-        SELECT employee_id, full_name, department_name, designation_name FROM employees
-        UNION SELECT employee_id, full_name, NULL, NULL FROM hrs
-        UNION SELECT employee_id, full_name, department_name, designation_name FROM dept_heads
-        UNION SELECT employee_id, full_name, department_name, designation_name FROM managers
-      ) e ON p.employee_id = e.employee_id
+      JOIN hrms_users u ON p.employee_id = u.employee_id
     `;
     let countQuery = `
       SELECT COUNT(*) as total
       FROM payroll p
-      JOIN (
-        SELECT employee_id, full_name, department_name, designation_name FROM employees
-        UNION SELECT employee_id, full_name, NULL, NULL FROM hrs
-        UNION SELECT employee_id, full_name, department_name, designation_name FROM dept_heads
-        UNION SELECT employee_id, full_name, department_name, designation_name FROM managers
-      ) e ON p.employee_id = e.employee_id
+      JOIN hrms_users u ON p.employee_id = u.employee_id
     `;
     let params = [];
     let countParams = [];
@@ -347,7 +515,8 @@ const getPayslips = async (req, res) => {
 
     if (month) {
       query += role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
-      countQuery += role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
+      countQuery +=
+        role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
       params.push(month);
       countParams.push(month);
     }
@@ -374,4 +543,4 @@ const getPayslips = async (req, res) => {
   }
 };
 
-module.exports = { generatePayslip, getPayslips };  
+module.exports = { generatePayslip, getPayslips };

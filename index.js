@@ -18,7 +18,7 @@ const siteVisitRouter = require('./routes/siteVisitRoutes')
 const {initializeSocket} = require('./controllers/siteVisitController')
 const companyRouter = require('./routes/companyRoutes');
 const vistingRouter = require('./routes/visitingRoutes')
-// const dashboardRouter = require('./routes/dashboardRoutes')
+const dashboardRouter = require('./routes/dashboardRoutes')
 const allowedOrigins = [
   'http://localhost:3004',
  'https://fe2663e99cb4.ngrok-free.app',
@@ -64,7 +64,7 @@ app.use('/api', performanceRouter);
 app.use('/api', siteVisitRouter);
 app.use('/api', companyRouter);
 app.use('/api', vistingRouter);
-// app.use('/api', dashboardRouter);
+app.use('/api', dashboardRouter);
 
 const port = 3007;
 server.listen(port, () => {

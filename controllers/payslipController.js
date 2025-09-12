@@ -4,6 +4,7 @@ const util = require("util");
 const path = require("path");
 const fs = require("fs");
 const { permission } = require("process");
+
 const queryAsync = util.promisify(pool.query).bind(pool);
 
 const COMPANY_CONFIG = {

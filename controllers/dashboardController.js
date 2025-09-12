@@ -1,138 +1,164 @@
-// const util = require('util');
-// const pool = require('../config/db');
-// const { getLeaveBalances: getCoreLeaveBalances, getLeaves } = require('./leaveController');
+const pool = require('../config/db');
+const util = require('util');
 
-// const queryAsync = util.promisify(pool.query).bind(pool);
+// Import formatCurrency from payrollController.js
+const formatCurrency = (value) => {
+  return `₹${(parseFloat(value) || 0).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+};
 
-// const getLeaveBalances = async (req, res) => {
-//   const { employeeId } = req.query;
-//   const { role, employee_id } = req.user;
+const queryAsync = util.promisify(pool.query).bind(pool);
 
-//   try {
-//     if (role === 'employee' && employeeId !== employee_id) {
-//       return res.status(403).json({ error: 'Access denied: You can only view your own leave balances' });
-//     }
+// Define quickActionsByRole with super-admin focus
+const quickActionsByRole = {
+  super_admin: [
+    { title: 'Manage Employees', icon: 'Users', link: '/admin/employees' },
+    { title: 'Approve Leaves', icon: 'Calendar', link: '/admin/leave-approvals' },
+    { title: 'Payroll Overview', icon: 'CreditCard', link: '/admin/payroll' },
+    { title: 'Generate Payroll', icon: 'FileText', link: '/admin/generate-payroll' },
+    { title: 'Download Payroll PDF', icon: 'Download', link: '/admin/download-payroll' },
+  ],
+  hr: [
+    { title: 'Manage Employees', icon: 'Users', link: '/admin/employees' },
+    { title: 'Approve Leaves', icon: 'Calendar', link: '/admin/leave-approvals' },
+    { title: 'Payroll', icon: 'CreditCard', link: '/admin/payroll' },
+    { title: 'Generate Payroll', icon: 'FileText', link: '/admin/generate-payroll' },
+  ],
+  dept_head: [
+    { title: 'Team Attendance', icon: 'Clock', link: '/admin/team-attendance' },
+    { title: 'Team Performance', icon: 'Users', link: '/admin/team-performance' },
+    { title: 'Leave Approvals', icon: 'Calendar', link: '/admin/leave-approvals' },
+  ],
+};
 
-//     // Reuse leaveController's getLeaveBalances
-//     const leaveBalances = await getCoreLeaveBalances({ user: { employee_id: employeeId } });
-    
-//     // Format for dashboard UI
-//     const formattedBalances = leaveBalances.data.map((leave) => ({
-//       type: leave.leave_type,
-//       remaining: leave.balance,
-//       total: leave.leave_type === 'vacation' ? 20 : leave.leave_type === 'sick' ? 10 : leave.leave_type === 'casual' ? 5 : leave.leave_type === 'maternity' ? 90 : 15,
-//       icon: ['vacation', 'maternity'].includes(leave.leave_type) ? 'Calendar' : leave.leave_type === 'sick' ? 'FileText' : 'Users',
-//       color: `bg-gradient-to-r from-teal-${leave.leave_type === 'vacation' ? '500' : leave.leave_type === 'sick' ? '600' : leave.leave_type === 'casual' ? '700' : '400'} to-slate-${leave.leave_type === 'vacation' ? '600' : leave.leave_type === 'sick' ? '700' : leave.leave_type === 'casual' ? '800' : '500'}`,
-//       bgColor: 'bg-white/90 backdrop-blur-sm',
-//       textColor: 'text-teal-800',
-//     }));
+const getDashboardData = async (req, res) => {
+  const userRole = req.user.role;
+  const userId = req.user.employee_id;
+  const { role } = req.params;
+  const { start_date, end_date } = req.query;
 
-//     res.json({
-//       message: 'Leave balances fetched successfully',
-//       data: formattedBalances,
-//     });
-//   } catch (error) {
-//     console.error('Error fetching leave balances:', error.message);
-//     res.status(500).json({ error: 'Failed to fetch leave balances', details: error.message });
-//   }
-// };
+  if (!['super_admin', 'hr', 'dept_head'].includes(userRole)) {
+    return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+  }
+  if (!['super_admin', 'hr', 'dept_head'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role' });
+  }
+  if (userRole === 'hr' && role === 'super_admin') {
+    return res.status(403).json({ error: 'HR cannot access super_admin dashboard' });
+  }
+  if (userRole === 'dept_head' && role !== 'dept_head') {
+    return res.status(403).json({ error: 'Department heads can only access their own dashboard' });
+  }
 
-// const getLeaveRequests = async (req, res) => {
-//   const { employeeId, fromDate, toDate } = req.query;
-//   const { role, employee_id } = req.user;
+  try {
+    const dashboardData = {
+      stats: [],
+      quickActions: quickActionsByRole[role] || [],
+      recentActivities: [],
+      performanceMetrics: [],
+      leaveBalances: {},
+    };
 
-//   try {
-//     if (role === 'employee' && employeeId !== employee_id) {
-//       return res.status(403).json({ error: 'Access denied: You can only view your own leave requests' });
-//     }
+    let statsQuery = `
+      SELECT 
+        (SELECT COUNT(*) FROM hrms_users WHERE role IN ('dept_head', 'manager', 'employee')) as total_employees,
+        (SELECT COUNT(DISTINCT employee_id) FROM attendance WHERE DATE(created_at) = CURDATE() AND status = 'Approved') as present_today,
+        (SELECT COALESCE(SUM(COALESCE(basic_salary, 0) + COALESCE(allowances, 0) + COALESCE(bonuses, 0)), 0) FROM hrms_users WHERE role IN ('dept_head', 'manager', 'employee')) as monthly_payroll,
+        (SELECT COUNT(*) FROM leaves l JOIN leave_recipients lr ON l.id = lr.leave_id WHERE l.status = 'Pending' AND lr.recipient_id = ?) as pending_leaves
+    `;
+    let statsParams = [userId];
+    if (role === 'dept_head') {
+      const [deptHead] = await queryAsync(
+        'SELECT department_name FROM hrms_users WHERE employee_id = ? AND role = "dept_head"',
+        [userId]
+      );
+      if (!deptHead) {
+        return res.status(403).json({ error: 'Not a department head' });
+      }
+      statsQuery = statsQuery.replace(
+        "WHERE role IN ('dept_head', 'manager', 'employee')",
+        'WHERE department_name = ?'
+      );
+      statsParams = [deptHead.department_name, userId];
+    } else if (role === 'super_admin') {
+      // Super admins see all pending leaves
+      statsQuery = statsQuery.replace(
+        "WHERE l.status = 'Pending' AND lr.recipient_id = ?",
+        "WHERE l.status = 'Pending'"
+      );
+      statsParams = [];
+    }
+    const [stats] = await queryAsync(statsQuery, statsParams);
+    dashboardData.stats = [
+      { title: 'Total Employees', value: stats.total_employees.toString(), change: '0%', icon: 'Users' },
+      { title: 'Present Today', value: stats.present_today.toString(), change: '0%', icon: 'Clock' },
+      { title: 'Monthly Payroll', value: formatCurrency(stats.monthly_payroll || 0), change: '0%', icon: 'CreditCard' },
+      { title: 'Pending Leaves', value: stats.pending_leaves.toString(), change: '0%', icon: 'Calendar' },
+    ];
 
-//     // Reuse leaveController's getLeaves
-//     const leaveRequests = await getLeaves({ user: { employee_id: employeeId } });
+    let activitiesQuery = `
+      SELECT 'Attendance' as type, u.full_name as name, a.created_at as time, 'Clock' as icon
+      FROM attendance a
+      JOIN hrms_users u ON a.employee_id = u.employee_id
+      WHERE a.recipient = ? AND a.created_at >= DATE_SUB(NOW(), INTERVAL 1 WEEK)
+      UNION
+      SELECT 'Leave Applied' as type, u.full_name as name, l.start_date as time, 'Calendar' as icon
+      FROM leaves l
+      JOIN hrms_users u ON l.employee_id = u.employee_id
+      JOIN leave_recipients lr ON l.id = lr.leave_id
+      WHERE lr.recipient_id = ? AND l.start_date >= DATE_SUB(NOW(), INTERVAL 1 WEEK)
+      ORDER BY time DESC LIMIT 5
+    `;
+    let activitiesParams = [role, userId];
+    if (role === 'super_admin') {
+      activitiesQuery = activitiesQuery.replace(
+        'WHERE lr.recipient_id = ? AND l.start_date >= DATE_SUB(NOW(), INTERVAL 1 WEEK)',
+        'WHERE l.start_date >= DATE_SUB(NOW(), INTERVAL 1 WEEK)'
+      );
+      activitiesParams = [role];
+    }
+    const activities = await queryAsync(activitiesQuery, activitiesParams);
+    dashboardData.recentActivities = activities.map((a) => ({
+      type: a.type,
+      name: a.name,
+      time: new Date(a.time).toLocaleString(),
+      icon: a.icon,
+    }));
 
-//     // Filter by date range if provided
-//     let filteredRequests = leaveRequests;
-//     if (fromDate && toDate) {
-//       filteredRequests = leaveRequests.filter(
-//         (req) => new Date(req.start_date) >= new Date(fromDate) && new Date(req.end_date) <= new Date(toDate)
-//       );
-//     }
+    const [attendanceRate] = await queryAsync(
+      `SELECT COALESCE(AVG(CASE WHEN status = 'Approved' THEN 1 ELSE 0 END) * 100, 0) as rate
+       FROM attendance
+       WHERE employee_id IN (SELECT employee_id FROM hrms_users WHERE role IN ('dept_head', 'manager', 'employee'))
+       ${start_date && end_date ? 'AND created_at BETWEEN ? AND ?' : ''}`,
+      start_date && end_date ? [start_date, end_date] : []
+    );
+    const leaveBalances = await queryAsync(
+      `SELECT leave_type, balance FROM leave_balances WHERE employee_id = ? AND year = ?`,
+      [userId, new Date().getFullYear()]
+    );
+    const attendanceRateValue = Number(attendanceRate?.rate) || 0;
 
-//     // Format for dashboard UI
-//     const formattedRequests = filteredRequests.map((req) => ({
-//       id: req.id,
-//       type: req.leave_type,
-//       from: req.start_date,
-//       to: req.end_date,
-//       days: req.total_days,
-//       status: req.status,
-//       details: req.reason || 'No details provided',
-//     }));
+   dashboardData.performanceMetrics = [
+  { 
+    title: 'Attendance Rate', 
+    value: `${attendanceRateValue.toFixed(0)}%`, 
+    description: 'This month' 
+  },
+  ...leaveBalances.map((b) => ({
+    title: `${b.leave_type.charAt(0).toUpperCase() + b.leave_type.slice(1)} Leave Balance`,
+    value: `${b.balance} days`,
+    description: `Available for ${new Date().getFullYear()}`,
+  })),
+];
 
-//     res.json({
-//       message: 'Leave requests fetched successfully',
-//       data: formattedRequests,
-//     });
-//   } catch (error) {
-//     console.error('Error fetching leave requests:', error.message);
-//     res.status(500).json({ error: 'Failed to fetch leave requests', details: error.message });
-//   }
-// };
 
-// const getAttendance = async (req, res) => {
-//   const { employeeId, date } = req.query;
-//   const { role, employee_id } = req.user;
+    res.json(dashboardData);
+  } catch (err) {
+    console.error('DB error in getDashboardData:', err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: 'Database error', details: err.sqlMessage || err.message });
+  }
+};
 
-//   try {
-//     if (role === 'employee' && employeeId !== employee_id) {
-//       return res.status(403).json({ error: 'Access denied: You can only view your own attendance' });
-//     }
-
-//     // Fetch today's attendance
-//     const today = date || new Date().toISOString().split('T')[0];
-//     const [todayAttendance] = await queryAsync(
-//       'SELECT status, updated_at FROM attendance WHERE employee_id = ? AND date = ?',
-//       [employeeId, today]
-//     );
-
-//     // Fetch recent attendance (last 7 days)
-//     const recentAttendance = await queryAsync(
-//       'SELECT date, status, time_in, time_out FROM attendance WHERE employee_id = ? AND date >= DATE_SUB(?, INTERVAL 7 DAY) ORDER BY date DESC LIMIT 5',
-//       [employeeId, today]
-//     );
-
-//     res.json({
-//       message: 'Attendance fetched successfully',
-//       data: {
-//         today: {
-//           today: todayAttendance?.status || 'N/A',
-//           lastUpdated: todayAttendance?.updated_at
-//             ? new Intl.DateTimeFormat('en-US', {
-//                 dateStyle: 'short',
-//                 timeStyle: 'short',
-//                 timeZone: 'Asia/Kolkata',
-//               }).format(new Date(todayAttendance.updated_at))
-//             : 'N/A',
-//         },
-//         recent: recentAttendance.map((record) => ({
-//           date: record.date,
-//           status: record.status,
-//           timeIn: record.time_in
-//             ? new Intl.DateTimeFormat('en-US', { timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(
-//                 new Date(`1970-01-01T${record.time_in}`)
-//               )
-//             : '-',
-//           timeOut: record.time_out
-//             ? new Intl.DateTimeFormat('en-US', { timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(
-//                 new Date(`1970-01-01T${record.time_out}`)
-//               )
-//             : '-',
-//         })),
-//       },
-//     });
-//   } catch (error) {
-//     console.error('Error fetching attendance:', error.message);
-//     res.status(500).json({ error: 'Failed to fetch attendance', details: error.message });
-//   }
-// };
-
-// module.exports = { getLeaveBalances, getLeaveRequests, getAttendance }; 
+module.exports = { getDashboardData };

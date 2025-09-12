@@ -1,10 +1,8 @@
-// const express = require('express');
-// const { getLeaveRequests, getLeaveBalances, getAttendance } = require('../controllers/dashboardController');
-// const { authenticateToken } = require('../middleware/authenticate');
-// const router = express.Router();
+ const express = require('express');
+ const { authenticateToken } = require('../middleware/authenticate');
+const { getDashboardData } = require('../controllers/dashboardController');
+ const router = express.Router();
 
-// router.get('/leave-balances', authenticateToken, getLeaveBalances);
-// router.get('/leave-requests', authenticateToken, getLeaveRequests);
-// router.get('/attendance', authenticateToken, getAttendance);
+ router.get('/dashboard/:role', authenticateToken, getDashboardData);
 
-// module.exports = router;
+module.exports = router;

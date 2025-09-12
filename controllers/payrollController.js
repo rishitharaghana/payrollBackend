@@ -640,7 +640,7 @@ const downloadPayrollPDF = async (req, res) => {
         .font("Helvetica")
         .fontSize(10)
         .fillColor("#1F2937")
-        .text("HR Authorized Signatory", 400, doc.y + 20, { align: "right", width: 150 });
+        .text("Admin Authorized Signatory", 400, doc.y + 20, { align: "right", width: 150 });
     }
 
     doc
@@ -662,6 +662,7 @@ const downloadPayrollPDF = async (req, res) => {
     }
   }
 };
+
 
 module.exports = {
   getPayrolls,

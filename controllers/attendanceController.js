@@ -89,21 +89,46 @@ const fetchEmployeeAttendance = async (req, res) => {
     }
 
     const attendance = await queryAsync(
-      `SELECT id, employee_id, date, login_time, logout_time, recipient, location, status, created_at
-       FROM attendance WHERE employee_id = ? ORDER BY date DESC`,
+      `SELECT id, employee_id, date, login_time, logout_time, recipient, location, status, 
+              DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at
+       FROM attendance 
+       WHERE employee_id = ? 
+       ORDER BY date DESC 
+       LIMIT 10`, // Limit to recent records for dashboard
+      [user.employee_id]
+    );
+
+    const [todayStatus] = await queryAsync(
+      `SELECT status, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') as lastUpdated
+       FROM attendance 
+       WHERE employee_id = ? AND date = CURDATE()`,
       [user.employee_id]
     );
 
     res.json({
       message: 'Attendance records fetched successfully',
-      data: attendance.map((record) => ({
-        ...record,
-        employee_name: user.full_name,
-      })),
+      data: {
+        attendance: attendance.map((record) => ({
+          id: record.id,
+          employee_id: record.employee_id,
+          date: record.date,
+          timeIn: record.login_time || 'N/A',
+          timeOut: record.logout_time || 'N/A',
+          status: record.status,
+          recipient: record.recipient,
+          location: record.location,
+          created_at: record.created_at,
+          employee_name: user.full_name,
+        })),
+        attendanceStatus: {
+          today: todayStatus?.status || 'Not Recorded',
+          lastUpdated: todayStatus?.lastUpdated || 'N/A',
+        },
+      },
     });
   } catch (err) {
-    console.error('DB error in fetchEmployeeAttendance:', err);
-    res.status(500).json({ error: 'Database error' });
+    console.error('DB error in fetchEmployeeAttendance:', err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.sqlMessage || err.message}` });
   }
 };
 

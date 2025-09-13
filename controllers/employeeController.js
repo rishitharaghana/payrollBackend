@@ -217,15 +217,24 @@ const createEmployee = async (req, res) => {
         gender || null,
         photo_url,
         role,
+        'active',
       ];
 
       console.log("Insert query:", query);
       console.log("Insert values:", values);
 
       const result = await queryAsync(query, values);
+    if (['employee', 'hr', 'dept_head', 'manager'].includes(role)) {
+      try {
+        const { allocateMonthlyLeaves } = require('./leaveController');
+        await allocateMonthlyLeaves({ user: { role: 'super_admin' } });
+        console.log(`Initial leave allocation completed for employee ${employeeId}`);
+      } catch (err) {
+        console.error(`Failed to allocate initial leave for employee ${employeeId}:`, err.message);
+      }
+    }
       console.log("Database insert result:", result);
 
-      // Fetch the inserted record to verify DOB and join_date
       const [insertedRecord] = await queryAsync(
         `SELECT dob, join_date FROM hrms_users WHERE employee_id = ?`,
         [employeeId]

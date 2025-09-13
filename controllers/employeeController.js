@@ -45,9 +45,7 @@ const createEmployee = async (req, res) => {
       if (err.message.includes("Invalid file type")) {
         return res.status(400).json({ error: err.message });
       }
-      return res
-        .status(400)
-        .json({ error: `File upload error: ${err.message}` });
+      return res.status(400).json({ error: `File upload error: ${err.message}` });
     }
 
     console.log("Request body:", req.body);
@@ -80,54 +78,53 @@ const createEmployee = async (req, res) => {
       return res.status(400).json({ error: "Photo is required" });
     }
 
-    if (!["super_admin", "hr"].includes(userRole)) {
-      return res
-        .status(403)
-        .json({ error: "Access denied: Insufficient permissions" });
-    }
-    if (userRole === "hr" && role === "hr") {
-      return res.status(403).json({ error: "HR cannot create HR accounts" });
-    }
-    if (!name?.trim() || !email?.trim() || !mobile?.trim()) {
-      return res
-        .status(400)
-        .json({ error: "Name, email, and mobile are required" });
+    // Validate role exists
+    const [roleExists] = await queryAsync(
+      "SELECT role_id, isHRRole FROM roles WHERE role_id = ?",
+      [role]
+    );
+    if (!roleExists) {
+      return res.status(400).json({ error: "Invalid role specified" });
     }
 
+    // Permission checks
+    const [currentUserRole] = await queryAsync(
+      "SELECT isHRRole FROM roles WHERE role_id = ?",
+      [userRole]
+    );
+    if (!currentUserRole) {
+      return res.status(403).json({ error: "Invalid user role" });
+    }
+    if (!["super_admin"].includes(userRole) && !currentUserRole.isHRRole) {
+      return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+    }
+    if (userRole === "hr" && roleExists.isHRRole) {
+      return res.status(403).json({ error: "HR cannot create HR-level roles" });
+    }
+
+    // Input validations
+    if (!name?.trim() || !email?.trim() || !mobile?.trim()) {
+      return res.status(400).json({ error: "Name, email, and mobile are required" });
+    }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: "Invalid email format" });
     }
-
     if (emergency_phone && emergency_phone.trim() === mobile.trim()) {
       return res.status(400).json({
         error: "Mobile and emergency contact numbers cannot be the same",
       });
     }
-
     if (dob && isNaN(Date.parse(dob))) {
       return res.status(400).json({ error: "Invalid date of birth" });
     }
-
     if (join_date && isNaN(Date.parse(join_date))) {
       return res.status(400).json({ error: "Invalid join date" });
     }
-
     if (["employee", "manager"].includes(role) && !join_date) {
-      return res
-        .status(400)
-        .json({ error: "Join date is required for this role" });
+      return res.status(400).json({ error: "Join date is required for this role" });
     }
 
-    const validBloodGroups = [
-      "A+ve",
-      "A-ve",
-      "B+ve",
-      "B-ve",
-      "AB+ve",
-      "AB-ve",
-      "O+ve",
-      "O-ve",
-    ];
+    const validBloodGroups = ["A+ve", "A-ve", "B+ve", "B-ve", "AB+ve", "AB-ve", "O+ve", "O-ve"];
     if (blood_group && !validBloodGroups.includes(blood_group)) {
       return res.status(400).json({ error: "Invalid blood group" });
     }
@@ -139,35 +136,25 @@ const createEmployee = async (req, res) => {
 
     if (["dept_head", "employee", "manager"].includes(role)) {
       if (!department_name || !designation_name) {
-        return res
-          .status(400)
-          .json({ error: "Department and designation are required" });
+        return res.status(400).json({ error: "Department and designation are required" });
       }
       const [designation] = await queryAsync(
         "SELECT * FROM designations WHERE department_name = ? AND designation_name = ?",
         [department_name, designation_name]
       );
       if (!designation) {
-        return res
-          .status(400)
-          .json({ error: "Invalid department or designation" });
+        return res.status(400).json({ error: "Invalid department or designation" });
       }
     }
 
     if (["employee", "hr", "dept_head", "manager"].includes(role)) {
-      if (
-        isNaN(basic_salary) ||
-        basic_salary < 0 ||
-        isNaN(allowances) ||
-        allowances < 0
-      ) {
-        return res
-          .status(400)
-          .json({ error: "Valid basic salary and allowances are required" });
+      if (isNaN(basic_salary) || basic_salary < 0 || isNaN(allowances) || allowances < 0) {
+        return res.status(400).json({ error: "Valid basic salary and allowances are required" });
       }
     }
 
     try {
+      // Check for existing mobile and email
       const [existingMobile] = await queryAsync(
         `SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ?`,
         [mobile.trim()]
@@ -175,7 +162,6 @@ const createEmployee = async (req, res) => {
       if (existingMobile) {
         return res.status(400).json({ error: "Mobile number already in use" });
       }
-
       const [existingEmail] = await queryAsync(
         `SELECT email FROM hrms_users WHERE TRIM(LOWER(email)) = ?`,
         [email.trim().toLowerCase()]
@@ -184,18 +170,23 @@ const createEmployee = async (req, res) => {
         return res.status(400).json({ error: "Email already in use" });
       }
 
+      // Generate employee ID and hash password
       const employeeId = await generateEmployeeId();
       const hashedPassword = await bcrypt.hash(password, 10);
-      const baseUrl =
-        process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+      const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
       const photo_url = photo ? `${baseUrl}${path.basename(photo.path)}` : null;
 
-      console.log("Generated photo_url:", photo_url);
-      console.log("DOB value before insertion:", dob);
-      console.log("Join date before insertion:", join_date);
+      // Verify file exists
+      if (photo && !fs.existsSync(photo.path)) {
+        return res.status(500).json({ error: "Failed to save uploaded photo" });
+      }
 
-      const query = `INSERT INTO hrms_users (employee_id, full_name, email, mobile, emergency_phone, address, password, department_name, designation_name, employment_type, basic_salary, allowances, bonuses, join_date, is_temporary_password, blood_group, dob, gender, photo_url, role)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      // Insert employee
+      const query = `INSERT INTO hrms_users (
+        employee_id, full_name, email, mobile, emergency_phone, address, password, 
+        department_name, designation_name, employment_type, basic_salary, allowances, 
+        bonuses, join_date, is_temporary_password, blood_group, dob, gender, photo_url, role, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       const values = [
         employeeId,
         name,
@@ -224,23 +215,23 @@ const createEmployee = async (req, res) => {
       console.log("Insert values:", values);
 
       const result = await queryAsync(query, values);
-    if (['employee', 'hr', 'dept_head', 'manager'].includes(role)) {
-      try {
-        const { allocateMonthlyLeaves } = require('./leaveController');
-        await allocateMonthlyLeaves({ user: { role: 'super_admin' } });
-        console.log(`Initial leave allocation completed for employee ${employeeId}`);
-      } catch (err) {
-        console.error(`Failed to allocate initial leave for employee ${employeeId}:`, err.message);
-      }
-    }
-      console.log("Database insert result:", result);
 
+      // Allocate leaves
+      if (["employee", "hr", "dept_head", "manager"].includes(role)) {
+        try {
+          const { allocateMonthlyLeaves } = require("./leaveController");
+          await allocateMonthlyLeaves({ user: req.user }); // Pass actual user context
+          console.log(`Initial leave allocation completed for employee ${employeeId}`);
+        } catch (err) {
+          console.error(`Failed to allocate initial leave for employee ${employeeId}:`, err.message);
+        }
+      }
+
+      // Fetch inserted record
       const [insertedRecord] = await queryAsync(
         `SELECT dob, join_date FROM hrms_users WHERE employee_id = ?`,
         [employeeId]
       );
-      console.log("Inserted record DOB:", insertedRecord?.dob);
-      console.log("Inserted record join_date:", insertedRecord?.join_date);
 
       res.status(201).json({
         message: `${role} created successfully`,
@@ -276,9 +267,14 @@ const createEmployee = async (req, res) => {
 const updateEmployee = async (req, res) => {
   upload.fields([{ name: "photo", maxCount: 1 }])(req, res, async (err) => {
     if (err) {
-      return res
-        .status(400)
-        .json({ error: "File upload error: " + err.message });
+      console.error("Multer error:", err.message, err.code);
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({ error: "Photo size exceeds 5MB limit" });
+      }
+      if (err.message.includes("Invalid file type")) {
+        return res.status(400).json({ error: err.message });
+      }
+      return res.status(400).json({ error: `File upload error: ${err.message}` });
     }
 
     const userRole = req.user.role;
@@ -295,41 +291,48 @@ const updateEmployee = async (req, res) => {
     } = req.body;
     const photo = req.files?.["photo"]?.[0];
 
-    if (!["super_admin", "hr"].includes(userRole) && userRole !== role) {
+    // Validate role exists
+    const [roleExists] = await queryAsync(
+      "SELECT role_id, isHRRole FROM roles WHERE role_id = ?",
+      [role]
+    );
+    if (!roleExists) {
+      return res.status(400).json({ error: "Invalid role specified" });
+    }
+
+    // Permission checks
+    const [currentUserRole] = await queryAsync(
+      "SELECT isHRRole FROM roles WHERE role_id = ?",
+      [userRole]
+    );
+    if (!currentUserRole) {
+      return res.status(403).json({ error: "Invalid user role" });
+    }
+    if (!["super_admin"].includes(userRole) && !currentUserRole.isHRRole && userRole !== role) {
       return res.status(403).json({
         error: "Access denied: Insufficient permissions to update this record",
       });
     }
-    if (userRole === "hr" && role === "hr") {
-      return res.status(403).json({ error: "HR cannot update HR accounts" });
+    if (userRole === "hr" && roleExists.isHRRole) {
+      return res.status(403).json({ error: "HR cannot update HR-level roles" });
     }
 
+    // Input validations
     if (!name?.trim() || !email?.trim() || !mobile?.trim() || !role) {
       return res.status(400).json({
         error: "Name, email, mobile, and role are required for update",
       });
     }
-
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: "Invalid email format" });
     }
-
     if (emergency_phone && emergency_phone.trim() === mobile.trim()) {
       return res.status(400).json({
         error: "Mobile and emergency contact numbers cannot be the same",
       });
     }
 
-    const validBloodGroups = [
-      "A+ve",
-      "A-ve",
-      "B+ve",
-      "B-ve",
-      "AB+ve",
-      "AB-ve",
-      "O+ve",
-      "O-ve",
-    ];
+    const validBloodGroups = ["A+ve", "A-ve", "B+ve", "B-ve", "AB+ve", "AB-ve", "O+ve", "O-ve"];
     if (blood_group && !validBloodGroups.includes(blood_group)) {
       return res.status(400).json({ error: "Invalid blood group" });
     }
@@ -341,23 +344,31 @@ const updateEmployee = async (req, res) => {
 
     try {
       const [existingRecord] = await queryAsync(
-        `SELECT * FROM hrms_users WHERE id = ? AND role = ?`,
-        [id, role]
+        `SELECT * FROM hrms_users WHERE id = ?`,
+        [id]
       );
       if (!existingRecord) {
-        return res.status(404).json({ error: `${role} record not found` });
+        return res.status(404).json({ error: "Employee record not found" });
       }
 
+      // Check if role is being changed
+      if (existingRecord.role !== role) {
+        if (!["super_admin"].includes(userRole)) {
+          return res.status(403).json({ error: "Only super admins can change roles" });
+        }
+        if (userRole === "hr" && roleExists.isHRRole) {
+          return res.status(403).json({ error: "HR cannot assign HR-level roles" });
+        }
+      }
+
+      // Check for email and mobile conflicts
       const [emailCheck] = await queryAsync(
         `SELECT * FROM hrms_users WHERE email = ? AND id != ?`,
         [email, id]
       );
       if (emailCheck) {
-        return res
-          .status(400)
-          .json({ error: "Email is already in use by another record" });
+        return res.status(400).json({ error: "Email is already in use by another record" });
       }
-
       const [mobileCheck] = await queryAsync(
         `SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ? AND id != ?`,
         [mobile.trim(), id]
@@ -366,15 +377,23 @@ const updateEmployee = async (req, res) => {
         return res.status(400).json({ error: "Mobile number already in use" });
       }
 
-      const baseUrl =
-        process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
-      const photo_url = photo
-        ? `${baseUrl}${path.basename(photo.path)}`
-        : req.body.photo === "null"
-        ? null
-        : existingRecord.photo_url;
+      // Handle photo upload
+      const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+      let photo_url = existingRecord.photo_url;
+      if (photo) {
+        if (!fs.existsSync(photo.path)) {
+          return res.status(500).json({ error: "Failed to save uploaded photo" });
+        }
+        photo_url = `${baseUrl}${path.basename(photo.path)}`;
+      } else if (req.body.photo === "null") {
+        photo_url = null;
+      }
 
-      const query = `UPDATE hrms_users SET full_name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, blood_group = ?, gender = ?, photo_url = ? WHERE id = ? AND role = ?`;
+      // Update employee
+      const query = `UPDATE hrms_users SET 
+        full_name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, 
+        blood_group = ?, gender = ?, photo_url = ?, role = ? 
+        WHERE id = ?`;
       const values = [
         name,
         email,
@@ -384,15 +403,13 @@ const updateEmployee = async (req, res) => {
         blood_group || null,
         gender || null,
         photo_url,
-        id,
         role,
+        id,
       ];
 
       const result = await queryAsync(query, values);
       if (result.affectedRows === 0) {
-        return res
-          .status(404)
-          .json({ error: `${role} record not found for update` });
+        return res.status(404).json({ error: "Employee record not found for update" });
       }
 
       res.json({
@@ -412,7 +429,7 @@ const updateEmployee = async (req, res) => {
       });
     } catch (err) {
       console.error("DB error:", err.message, err.sqlMessage, err.code);
-      res.status(500).json({ error: "Database error during update" });
+      res.status(500).json({ error: `Database error: ${err.message}` });
     }
   });
 };

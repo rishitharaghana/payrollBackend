@@ -219,24 +219,10 @@ const downloadSingleCard = async (req, res) => {
       `SELECT employee_id, full_name, email, mobile, department_name, designation_name, address, 
               CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url,
               'meetowner.in' as website
-       FROM (
-         SELECT employee_id, full_name, email, mobile, department_name, designation_name, address, photo_url
-         FROM employees WHERE employee_id = ?
-         UNION
-         SELECT employee_id, full_name, email, mobile, department_name, designation_name, address, photo_url
-         FROM hrs WHERE employee_id = ?
-         UNION
-         SELECT employee_id, full_name, email, mobile, department_name, designation_name, address, photo_url
-         FROM dept_heads WHERE employee_id = ?
-         UNION
-         SELECT employee_id, full_name, email, mobile, department_name, designation_name, address, photo_url
-         FROM managers WHERE employee_id = ?
-       ) AS all_users`,
+       FROM hrms_users 
+       WHERE employee_id = ?`,
       [
         process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/",
-        employeeId,
-        employeeId,
-        employeeId,
         employeeId,
       ]
     );

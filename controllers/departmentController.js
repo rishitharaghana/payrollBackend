@@ -168,4 +168,51 @@ const createRole = async (req, res) => {
   }
 };
 
-module.exports = { getDepartments, createDepartment, getDesignations, createDesignation, getRoles, createRole };
+const updateRole = async (req, res) => {
+  const { role_id } = req.params;
+  const { name, description, isHRRole } = req.body;
+
+  if (!name?.trim() || !description?.trim()) {
+    return res.status(400).json({ success: false, error: "Name and description are required" });
+  }
+
+  try {
+    const userRole = req.user?.role;
+    if (!["super_admin", "hr"].includes(userRole)) {
+      return res.status(403).json({ success: false, error: "Only super admins and HR can update roles" });
+    }
+
+    const [existingRole] = await queryAsync(
+      "SELECT isHRRole FROM roles WHERE role_id = ?",
+      [role_id]
+    );
+    if (!existingRole) {
+      return res.status(404).json({ success: false, error: "Role not found" });
+    }
+
+    if (userRole === "hr" && existingRole.isHRRole) {
+      return res.status(403).json({ success: false, error: "HR cannot update HR-level roles" });
+    }
+
+    if (userRole === "hr" && isHRRole) {
+      return res.status(403).json({ success: false, error: "HR cannot set roles as HR-level" });
+    }
+
+    await queryAsync(
+      "UPDATE roles SET name = ?, description = ?, isHRRole = ? WHERE role_id = ?",
+      [name.trim(), description.trim(), isHRRole ? 1 : 0, role_id]
+    );
+
+    res.status(200).json({ success: true, message: "Role updated successfully" });
+  } catch (err) {
+    console.error("Error updating role:", {
+      message: err.message,
+      stack: err.stack,
+      sqlMessage: err.sqlMessage,
+    });
+    res.status(500).json({ success: false, error: `Database error: ${err.message}` });
+  }
+};
+
+
+module.exports = { getDepartments, createDepartment, getDesignations, createDesignation, getRoles, createRole, updateRole };

@@ -168,6 +168,80 @@ const fetchTravelExpenses = async (req, res) => {
   }
 };
 
+const fetchTravelExpenseHistory = async (req, res) => {
+  const { role, id } = req.user;
+
+  if (!['super_admin', 'hr'].includes(role)) {
+    return res.status(403).json({ error: 'Access denied: Only HR and Super Admin can view travel expense history' });
+  }
+
+  try {
+    const [user] = await queryAsync('SELECT employee_id, role FROM hrms_users WHERE id = ?', [id]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const query = `
+      SELECT te.*, ei.id AS expense_item_id, ei.expense_date, ei.purpose AS expense_purpose, ei.amount,
+             er.id AS receipt_id, er.file_name, er.file_path, er.file_size,
+             u.full_name AS employee_name, u.department_name
+      FROM travel_expenses te
+      LEFT JOIN expense_items ei ON te.id = ei.travel_expense_id
+      LEFT JOIN expense_receipts er ON te.id = er.travel_expense_id
+      LEFT JOIN hrms_users u ON te.employee_id = u.employee_id
+      ORDER BY te.created_at DESC
+    `;
+
+    const submissions = await queryAsync(query, []);
+
+    const groupedSubmissions = submissions.reduce((acc, row) => {
+      const submission = acc.find(s => s.id === row.id);
+      const expense = {
+        id: row.expense_item_id,
+        expense_date: row.expense_date,
+        purpose: row.expense_purpose,
+        amount: row.amount,
+        receipt: row.receipt_id ? {
+          id: row.receipt_id,
+          file_name: row.file_name,
+          file_path: row.file_path,
+          file_size: row.file_size,
+        } : null,
+      };
+
+      if (submission) {
+        submission.expenses.push(expense);
+      } else {
+        acc.push({
+          id: row.id,
+          employee_id: row.employee_id,
+          employee_name: row.employee_name,
+          department_name: row.department_name,
+          travel_date: row.travel_date,
+          destination: row.destination,
+          travel_purpose: row.travel_purpose,
+          total_amount: row.total_amount,
+          status: row.status,
+          approved_by: row.approved_by,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          admin_comment: row.admin_comment || null,
+          expenses: [expense],
+        });
+      }
+      return acc;
+    }, []);
+
+    res.status(200).json({
+      message: 'Travel expense history fetched successfully',
+      data: groupedSubmissions,
+    });
+  } catch (error) {
+    console.error('Fetch history error:', error);
+    res.status(500).json({ error: 'Failed to fetch travel expense history' });
+  }
+};
+
 const fetchTravelExpenseById = async (req, res) => {
   const { role, id } = req.user;
 
@@ -227,6 +301,7 @@ const fetchTravelExpenseById = async (req, res) => {
           approved_by: row.approved_by,
           created_at: row.created_at,
           updated_at: row.updated_at,
+          admin_comment: row.admin_comment || null,
           expenses: [expense],
         };
       } else {
@@ -329,6 +404,7 @@ const downloadReceipt = async (req, res) => {
 module.exports = {
   submitTravelExpense,
   fetchTravelExpenses,
+  fetchTravelExpenseHistory,
   fetchTravelExpenseById,
   updateTravelExpenseStatus,
   downloadReceipt,

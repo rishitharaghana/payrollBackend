@@ -49,6 +49,29 @@ cron.schedule('0 0 1 * *', async () => {
   }
 }, { timezone: 'Asia/Kolkata' });
 
+cron.schedule('0 0 1 * *', async () => {
+  console.log('Running monthly location logs cleanup...');
+  try {
+    
+    const retentionYears = 7;
+    await queryAsync(
+      `DELETE FROM location_logs 
+       WHERE timestamp < DATE_SUB(NOW(), INTERVAL 30 DAY)
+       AND employee_id IN (SELECT employee_id FROM hrms_users WHERE status = 'active')
+       OR timestamp < DATE_SUB(NOW(), INTERVAL ? YEAR)
+       AND employee_id IN (SELECT employee_id FROM hrms_users WHERE status = 'inactive')`,
+      [retentionYears]
+    );
+    await queryAsync(
+      `INSERT INTO audit_logs (action, details, performed_at) VALUES (?, ?, ?)`,
+      ["CLEANUP_LOCATION_LOGS", "Deleted old location logs", new Date()]
+    );
+    console.log('Old location logs deleted successfully');
+  } catch (err) {
+    console.error('Cleanup cron error:', err.message);
+  }
+}, { timezone: 'Asia/Kolkata' });
+
 console.log('Cron scheduler initialized');
 
 module.exports = { startScheduler: () => {} };

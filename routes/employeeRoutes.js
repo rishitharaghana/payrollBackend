@@ -26,7 +26,7 @@ router.post('/employees/documents', authenticateToken, createDocuments)
 router.post('/employees/bank-details', authenticateToken, createBankDetails);
 router.get("/employees", authenticateToken, fetchEmployees);
 router.put("/employees/:id", authenticateToken, updateEmployee);
-router.delete("/employees/:id", authenticateToken, deleteEmployee);
+router.delete("/employees/:id/terminate", authenticateToken, deleteEmployee);
 router.get("/profile", authenticateToken, getCurrentUserProfile);
 router.get('/employees/progress', authenticateToken, getEmployeeProgress);
 router.get('/employee/:id', authenticateToken, getEmployeeById);

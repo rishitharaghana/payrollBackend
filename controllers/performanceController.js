@@ -1,3 +1,4 @@
+// src/controllers/performanceController.js
 const pool = require("../config/db");
 const util = require("util");
 const queryAsync = util.promisify(pool.query).bind(pool);
@@ -5,13 +6,13 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 const checkEmployeeExists = async (employee_id) => {
   try {
     const query = `
-      SELECT employee_id, role 
+      SELECT employee_id, role, full_name, department_name 
       FROM hrms_users 
       WHERE LOWER(employee_id) = LOWER(?) 
       LIMIT 1
     `;
     const [employee] = await queryAsync(query, [employee_id]);
-    return employee || null; // Return employee object or null if not found
+    return employee || null;
   } catch (err) {
     console.error("checkEmployeeExists - Database error:", {
       error: err.message,
@@ -26,15 +27,11 @@ const setEmployeeGoal = async (req, res) => {
   const { employee_id, title, description, due_date, tasks } = req.body;
 
   if (!["super_admin", "hr"].includes(userRole)) {
-    return res
-      .status(403)
-      .json({ error: "Access denied: Only HR or Admin can set goals" });
+    return res.status(403).json({ error: "Access denied: Only HR or Admin can set goals" });
   }
 
   if (!employee_id || !title || !due_date) {
-    return res
-      .status(400)
-      .json({ error: "Employee ID, title, and due date are required" });
+    return res.status(400).json({ error: "Employee ID, title, and due date are required" });
   }
 
   if (isNaN(Date.parse(due_date))) {
@@ -46,17 +43,12 @@ const setEmployeeGoal = async (req, res) => {
     if (!employee) {
       return res.status(404).json({ error: "Employee not found" });
     }
+
     const goalQuery = `
-      INSERT INTO goals (employee_id, title, description, due_date, created_by)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO goals (goal_id, employee_id, title, description, due_date, created_by)
+      VALUES (UUID(), ?, ?, ?, ?, ?)
     `;
-    const goalValues = [
-      employee_id,
-      title,
-      description || null,
-      due_date,
-      req.user.employee_id,
-    ];
+    const goalValues = [employee_id, title, description || null, due_date, req.user.employee_id];
     const goalResult = await queryAsync(goalQuery, goalValues);
     const goalId = goalResult.insertId;
 
@@ -70,8 +62,8 @@ const setEmployeeGoal = async (req, res) => {
           throw new Error(`Invalid due date format for task: ${task.title}`);
         }
         const taskQuery = `
-          INSERT INTO tasks (goal_id, employee_id, title, description, due_date, priority)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO tasks (task_id, goal_id, employee_id, title, description, due_date, priority)
+          VALUES (UUID(), ?, ?, ?, ?, ?, ?)
         `;
         const taskValues = [
           goalId,
@@ -91,11 +83,11 @@ const setEmployeeGoal = async (req, res) => {
       data: { id: goalId, employee_id, title, description, due_date, tasks: insertedTasks },
     });
   } catch (err) {
-    console.error("setEmployeeGoal - Error:", {
+    console.error("setEmployeeGoal - Database error:", {
       error: err.message,
       employee_id,
     });
-    res.status(500).json({ error: `Error: ${err.message}` });
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
@@ -132,12 +124,16 @@ const fetchEmployeePerformance = async (req, res) => {
       return res.status(404).json({
         message: "Employee not found",
         data: {
+          employee_id,
+          full_name: null,
+          department_name: null,
           goals: [],
           tasks: [],
           competencies: [],
           achievements: [],
           feedback: [],
           learningGrowth: [],
+          appraisals: [],
         },
       });
     }
@@ -156,39 +152,42 @@ const fetchEmployeePerformance = async (req, res) => {
         !targetEmployee ||
         user.department_name !== targetEmployee.department_name
       ) {
-        return res
-          .status(403)
-          .json({ error: "Access denied: Not in the same department" });
+        return res.status(403).json({ error: "Access denied: Not in the same department" });
       }
     }
 
-    const [goals] = await queryAsync(
-      "SELECT id, title, description, due_date, progress, status FROM goals WHERE employee_id = ?",
+    const goals = await queryAsync(
+      "SELECT goal_id AS id, title, description, due_date, progress, status FROM goals WHERE employee_id = ?",
       [employee_id]
     );
 
-    const [tasks] = await queryAsync(
-      "SELECT id, goal_id, title, description, due_date, priority, progress, status FROM tasks WHERE employee_id = ?",
+    const tasks = await queryAsync(
+      "SELECT task_id AS id, goal_id, title, description, due_date, priority, progress, status FROM tasks WHERE employee_id = ?",
       [employee_id]
     );
 
-    const [competencies] = await queryAsync(
-      "SELECT skill, self_rating, manager_rating, feedback FROM competencies WHERE employee_id = ?",
+    const competencies = await queryAsync(
+      "SELECT competency_id AS id, skill, self_rating, manager_rating, feedback FROM competencies WHERE employee_id = ?",
       [employee_id]
     );
 
-    const [achievements] = await queryAsync(
-      "SELECT title, date, type FROM achievements WHERE employee_id = ?",
+    const achievements = await queryAsync(
+      "SELECT achievement_id AS id, title, date, type FROM achievements WHERE employee_id = ?",
       [employee_id]
     );
 
-    const [feedback] = await queryAsync(
-      "SELECT source, comment, timestamp FROM feedback WHERE employee_id = ?",
+    const feedback = await queryAsync(
+      "SELECT feedback_id AS id, source, comment, timestamp FROM feedback WHERE employee_id = ?",
       [employee_id]
     );
 
-    const [learningGrowth] = await queryAsync(
-      "SELECT title, progress, completed FROM learning_growth WHERE employee_id = ?",
+    const learningGrowth = await queryAsync(
+      "SELECT learning_id AS id, title, progress, completed FROM learning_growth WHERE employee_id = ?",
+      [employee_id]
+    );
+
+    const appraisals = await queryAsync(
+      "SELECT appraisal_id AS id, performance_score, manager_comments, bonus_eligible, promotion_recommended, salary_hike_percentage, reviewer_id, created_at FROM appraisals WHERE employee_id = ?",
       [employee_id]
     );
 
@@ -199,17 +198,22 @@ const fetchEmployeePerformance = async (req, res) => {
       achievements: achievements || [],
       feedback: feedback || [],
       learningGrowth: learningGrowth || [],
+      appraisals: appraisals || [],
     });
 
     return res.status(200).json({
       message: "Performance data fetched successfully",
       data: {
+        employee_id: employee.employee_id,
+        full_name: employee.full_name,
+        department_name: employee.department_name,
         goals: goals || [],
         tasks: tasks || [],
         competencies: competencies || [],
         achievements: achievements || [],
         feedback: feedback || [],
         learningGrowth: learningGrowth || [],
+        appraisals: appraisals || [],
       },
     });
   } catch (err) {
@@ -226,9 +230,7 @@ const submitSelfReview = async (req, res) => {
   const userEmployeeId = req.user.employee_id;
 
   if (userEmployeeId !== employee_id) {
-    return res
-      .status(403)
-      .json({ error: "Access denied: Can only submit self-review for yourself" });
+    return res.status(403).json({ error: "Access denied: Can only submit self-review for yourself" });
   }
 
   if (!comments?.trim()) {
@@ -242,12 +244,10 @@ const submitSelfReview = async (req, res) => {
     }
 
     await queryAsync(
-      "INSERT INTO feedback (employee_id, source, comment, timestamp) VALUES (?, ?, ?, NOW())",
+      "INSERT INTO feedback (feedback_id, employee_id, source, comment, timestamp) VALUES (UUID(), ?, ?, ?, NOW())",
       [employee_id, "Self", comments]
     );
-    res
-      .status(201)
-      .json({ message: "Self-review comments submitted successfully" });
+    res.status(201).json({ message: "Self-review comments submitted successfully" });
   } catch (err) {
     console.error("submitSelfReview - Database error:", {
       error: err.message,
@@ -273,22 +273,16 @@ const conductAppraisal = async (req, res) => {
   const default_reviewer_id = req.user.employee_id;
 
   if (!["super_admin", "hr"].includes(userRole)) {
-    return res
-      .status(403)
-      .json({ error: "Access denied: Only HR or Admin can conduct appraisals" });
+    return res.status(403).json({ error: "Access denied: Only HR or Admin can conduct appraisals" });
   }
 
   if (!employee_id || !performance_score || !manager_comments) {
-    return res
-      .status(400)
-      .json({ error: "Employee ID, performance score, and manager comments are required" });
+    return res.status(400).json({ error: "Employee ID, performance score, and manager comments are required" });
   }
 
   const score = parseInt(performance_score, 10);
   if (isNaN(score) || score < 0 || score > 100) {
-    return res
-      .status(400)
-      .json({ error: "Invalid performance score (must be 0-100)" });
+    return res.status(400).json({ error: "Invalid performance score (must be 0-100)" });
   }
 
   const salaryHike = salary_hike_percentage ? parseFloat(salary_hike_percentage) : 0;
@@ -298,9 +292,7 @@ const conductAppraisal = async (req, res) => {
 
   const effective_reviewer_id = reviewer_id || default_reviewer_id;
   if (!effective_reviewer_id) {
-    return res
-      .status(400)
-      .json({ error: "Reviewer ID is required and could not be determined" });
+    return res.status(400).json({ error: "Reviewer ID is required and could not be determined" });
   }
 
   try {
@@ -311,14 +303,12 @@ const conductAppraisal = async (req, res) => {
 
     const reviewer = await checkEmployeeExists(effective_reviewer_id);
     if (!reviewer) {
-      return res
-        .status(404)
-        .json({ error: `Reviewer ${effective_reviewer_id} not found` });
+      return res.status(404).json({ error: `Reviewer ${effective_reviewer_id} not found` });
     }
 
     const appraisalQuery = `
-      INSERT INTO appraisals (employee_id, performance_score, manager_comments, bonus_eligible, promotion_recommended, salary_hike_percentage, reviewer_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+      INSERT INTO appraisals (appraisal_id, employee_id, performance_score, manager_comments, bonus_eligible, promotion_recommended, salary_hike_percentage, reviewer_id, created_at)
+      VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
     await queryAsync(appraisalQuery, [
       employee_id,
@@ -332,7 +322,7 @@ const conductAppraisal = async (req, res) => {
 
     if (manager_comments) {
       await queryAsync(
-        "INSERT INTO feedback (employee_id, source, comment, timestamp) VALUES (?, ?, ?, NOW())",
+        "INSERT INTO feedback (feedback_id, employee_id, source, comment, timestamp) VALUES (UUID(), ?, ?, ?, NOW())",
         [employee_id, "Manager", manager_comments]
       );
     }
@@ -340,18 +330,14 @@ const conductAppraisal = async (req, res) => {
     if (Array.isArray(competencies) && competencies.length > 0) {
       for (const comp of competencies) {
         if (!comp.skill || !comp.manager_rating) {
-          throw new Error(
-            `Skill and manager rating are required for competency: ${comp.skill || "unknown"}`
-          );
+          throw new Error(`Skill and manager rating are required for competency: ${comp.skill || "unknown"}`);
         }
         const rating = parseInt(comp.manager_rating, 10);
         if (isNaN(rating) || rating < 0 || rating > 10) {
-          throw new Error(
-            `Invalid manager rating for skill ${comp.skill} (must be 0-10)`
-          );
+          throw new Error(`Invalid manager rating for skill ${comp.skill} (must be 0-10)`);
         }
         await queryAsync(
-          "INSERT INTO competencies (employee_id, skill, manager_rating, feedback) VALUES (?, ?, ?, ?)",
+          "INSERT INTO competencies (competency_id, employee_id, skill, manager_rating, feedback) VALUES (UUID(), ?, ?, ?, ?)",
           [employee_id, comp.skill, rating, comp.feedback || ""]
         );
       }
@@ -360,15 +346,13 @@ const conductAppraisal = async (req, res) => {
     if (Array.isArray(achievements) && achievements.length > 0) {
       for (const ach of achievements) {
         if (!ach.title || !ach.date) {
-          throw new Error(
-            `Achievement title and date are required for: ${ach.title || "unknown"}`
-          );
+          throw new Error(`Achievement title and date are required for: ${ach.title || "unknown"}`);
         }
         if (isNaN(Date.parse(ach.date))) {
           throw new Error(`Invalid date format for achievement: ${ach.title}`);
         }
         await queryAsync(
-          "INSERT INTO achievements (employee_id, title, date, type) VALUES (?, ?, ?, ?)",
+          "INSERT INTO achievements (achievement_id, employee_id, title, date, type) VALUES (UUID(), ?, ?, ?, ?)",
           [employee_id, ach.title, ach.date, ach.type || "Achievement"]
         );
       }
@@ -376,12 +360,12 @@ const conductAppraisal = async (req, res) => {
 
     res.status(201).json({ message: "Appraisal conducted successfully" });
   } catch (err) {
-    console.error("conductAppraisal - Error:", {
+    console.error("conductAppraisal - Database error:", {
       error: err.message,
       employee_id,
       reviewer_id: effective_reviewer_id,
     });
-    res.status(500).json({ error: `Error: ${err.message}` });
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
@@ -390,14 +374,16 @@ const updateGoalProgress = async (req, res) => {
   const { goal_id } = req.params;
   const { progress, status } = req.body;
 
+  if (!["super_admin", "hr", "dept_head", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+
   if (
     !progress ||
     !status ||
     !["Not Started", "In Progress", "Completed", "At Risk"].includes(status)
   ) {
-    return res
-      .status(400)
-      .json({ error: "Progress (0-100) and valid status are required" });
+    return res.status(400).json({ error: "Progress (0-100) and valid status are required" });
   }
 
   const progressNum = parseInt(progress, 10);
@@ -407,7 +393,7 @@ const updateGoalProgress = async (req, res) => {
 
   try {
     const [goal] = await queryAsync(
-      "SELECT employee_id, created_by FROM goals WHERE id = ?",
+      "SELECT employee_id, created_by FROM goals WHERE goal_id = ?",
       [goal_id]
     );
     if (!goal) {
@@ -415,10 +401,9 @@ const updateGoalProgress = async (req, res) => {
     }
 
     if (userRole === "employee" && goal.employee_id !== req.user.employee_id) {
-      return res
-        .status(403)
-        .json({ error: "Employees can only update their own goals" });
+      return res.status(403).json({ error: "Employees can only update their own goals" });
     }
+
     if (
       userRole === "dept_head" &&
       goal.employee_id !== req.user.employee_id &&
@@ -437,17 +422,14 @@ const updateGoalProgress = async (req, res) => {
         !user ||
         employee.department_name !== user.department_name
       ) {
-        return res
-          .status(403)
-          .json({
-            error:
-              "Department heads can only update their own goals or goals of employees in their department",
-          });
+        return res.status(403).json({
+          error: "Department heads can only update their own goals or goals of employees in their department",
+        });
       }
     }
 
     const query =
-      "UPDATE goals SET progress = ?, status = ?, updated_at = NOW() WHERE id = ?";
+      "UPDATE goals SET progress = ?, status = ?, updated_at = NOW() WHERE goal_id = ?";
     await queryAsync(query, [progressNum, status, goal_id]);
 
     res.json({

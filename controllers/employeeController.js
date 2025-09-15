@@ -78,31 +78,20 @@ const createEmployee = async (req, res) => {
       return res.status(400).json({ error: "Photo is required" });
     }
 
-    // Validate role exists
-    const [roleExists] = await queryAsync(
-      "SELECT role_id, isHRRole FROM roles WHERE role_id = ?",
-      [role]
-    );
-    if (!roleExists) {
+    // ✅ Role validation using ENUM values
+    const validRoles = ["super_admin", "hr", "dept_head", "manager", "employee"];
+    if (!validRoles.includes(role)) {
       return res.status(400).json({ error: "Invalid role specified" });
     }
 
-    // Permission checks
-    const [currentUserRole] = await queryAsync(
-      "SELECT isHRRole FROM roles WHERE role_id = ?",
-      [userRole]
-    );
-    if (!currentUserRole) {
-      return res.status(403).json({ error: "Invalid user role" });
-    }
-    if (!["super_admin"].includes(userRole) && !currentUserRole.isHRRole) {
+    // ✅ Permission checks
+    if (!["super_admin", "hr"].includes(userRole)) {
       return res.status(403).json({ error: "Access denied: Insufficient permissions" });
     }
-    if (userRole === "hr" && roleExists.isHRRole) {
+    if (userRole === "hr" && (role === "super_admin" || role === "hr")) {
       return res.status(403).json({ error: "HR cannot create HR-level roles" });
     }
 
-    // Input validations
     if (!name?.trim() || !email?.trim() || !mobile?.trim()) {
       return res.status(400).json({ error: "Name, email, and mobile are required" });
     }
@@ -154,7 +143,6 @@ const createEmployee = async (req, res) => {
     }
 
     try {
-      // Check for existing mobile and email
       const [existingMobile] = await queryAsync(
         `SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ?`,
         [mobile.trim()]
@@ -170,18 +158,15 @@ const createEmployee = async (req, res) => {
         return res.status(400).json({ error: "Email already in use" });
       }
 
-      // Generate employee ID and hash password
       const employeeId = await generateEmployeeId();
       const hashedPassword = await bcrypt.hash(password, 10);
-      const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
-      const photo_url = photo ? `${baseUrl}${path.basename(photo.path)}` : null;
+const baseUrl = process.env.UPLOADS_BASE_URL || `${req.protocol}://${req.get("host")}/uploads/`;
+const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
 
       // Verify file exists
       if (photo && !fs.existsSync(photo.path)) {
         return res.status(500).json({ error: "Failed to save uploaded photo" });
       }
-
-      // Insert employee
       const query = `INSERT INTO hrms_users (
         employee_id, full_name, email, mobile, emergency_phone, address, password, 
         department_name, designation_name, employment_type, basic_salary, allowances, 
@@ -877,7 +862,7 @@ const fetchEmployees = async (req, res) => {
       process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     const employees = await queryAsync(
       `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, basic_salary, allowances, join_date, dob, blood_group, gender, emergency_phone, role,
-              CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url 
+              photo_url
        FROM hrms_users WHERE role IN ('dept_head', 'manager', 'employee')`,
       [baseUrl]
     );
@@ -924,73 +909,129 @@ const getEmployeeById = async (req, res) => {
 const deleteEmployee = async (req, res) => {
   const userRole = req.user.role;
   const { id } = req.params;
-  const { role } = req.body;
+  const { role, exitType, reason, noticeStartDate, lastWorkingDate, restrictLeaves, exitChecklist } = req.body;
 
-  if (!["super_admin", "hr"].includes(userRole)) {
-    return res.status(403).json({
-      error: "Access denied: Insufficient permissions to delete this record",
-    });
+  if (!['super_admin', 'hr'].includes(userRole)) {
+    return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
   }
-  if (userRole === "hr" && role === "hr") {
-    return res.status(403).json({ error: "HR cannot delete HR accounts" });
+  if (userRole === 'hr' && role === 'hr') {
+    return res.status(403).json({ error: 'HR cannot terminate HR accounts' });
   }
-
-  if (!role) {
-    return res.status(400).json({ error: "Role is required for deletion" });
+  if (!role || !exitType) {
+    return res.status(400).json({ error: 'Role and exit type are required' });
+  }
+  if (exitType === 'resignation' && (!noticeStartDate || !lastWorkingDate)) {
+    return res.status(400).json({ error: 'Notice start and last working dates are required for resignation' });
   }
 
   try {
+    await queryAsync('START TRANSACTION');
+
     const [existingRecord] = await queryAsync(
-      `SELECT photo_url FROM hrms_users WHERE id = ? AND role = ?`,
+      `SELECT employee_id, photo_url, join_date, status FROM hrms_users WHERE id = ? AND role = ?`,
       [id, role]
     );
     if (!existingRecord) {
-      return res
-        .status(404)
-        .json({ error: `${role} record not found for deletion` });
+      await queryAsync('ROLLBACK');
+      return res.status(404).json({ error: `${role} record not found` });
+    }
+    if (existingRecord.status !== 'active') {
+      await queryAsync('ROLLBACK');
+      return res.status(400).json({ error: 'Only active employees can be terminated' });
     }
 
-    if (role === "employee") {
-      const payrollCheck = await queryAsync(
-        "SELECT * FROM payroll WHERE employee_id = (SELECT employee_id FROM hrms_users WHERE id = ? AND role = 'employee')",
-        [id]
+    // Check dependencies
+    const relatedTables = [
+      { table: 'payroll', column: 'employee_id' },
+      { table: 'personal_details', column: 'employee_id' },
+      { table: 'bank_details', column: 'employee_id' },
+      { table: 'education_details', column: 'employee_id' },
+      { table: 'documents', column: 'employee_id' },
+    ];
+    for (const { table, column } of relatedTables) {
+      const [records] = await queryAsync(
+        `SELECT ${column} FROM ${table} WHERE ${column} = ?`,
+        [existingRecord.employee_id]
       );
-      if (payrollCheck.length > 0) {
+      if (records) {
+        await queryAsync('ROLLBACK');
         return res.status(400).json({
-          error:
-            "Cannot delete employee with existing payroll records. Archive or resolve dependencies first.",
+          error: `Cannot terminate employee with records in ${table}. Archive or resolve dependencies.`,
         });
       }
     }
 
-    const result = await queryAsync(
-      `DELETE FROM hrms_users WHERE id = ? AND role = ?`,
-      [id, role]
+    // Update status based on exit type
+    const status = exitType === 'resignation' ? 'serving_notice' : exitType === 'absconding' ? 'absconded' : 'inactive';
+    await queryAsync(
+      `UPDATE hrms_users SET 
+        status = ?, 
+        exit_date = ?, 
+        termination_reason = ?, 
+        notice_start_date = ?, 
+        last_working_date = ?, 
+        restrict_leaves = ?,
+        exit_checklist = ? 
+        WHERE id = ? AND role = ?`,
+      [
+        status,
+        exitType === 'resignation' ? null : new Date(),
+        reason || null,
+        noticeStartDate || null,
+        lastWorkingDate || null,
+        restrictLeaves || false,
+        JSON.stringify(exitChecklist) || null,
+        id,
+        role,
+      ]
     );
-    if (result.affectedRows === 0) {
-      return res
-        .status(404)
-        .json({ error: `${role} record not found for deletion` });
+
+    // Log action
+    await queryAsync(
+      `INSERT INTO audit_logs (action, employee_id, performed_by, details, performed_at) VALUES (?, ?, ?, ?, ?)`,
+      [`TERMINATE_EMPLOYEE_${exitType.toUpperCase()}`, existingRecord.employee_id, req.user.employee_id, reason || 'No reason provided', new Date()]
+    );
+
+    // Update leave restrictions
+    if (restrictLeaves && exitType === 'resignation') {
+      await queryAsync(
+        `UPDATE leave_balances SET leave_application_allowed = false WHERE employee_id = ?`,
+        [existingRecord.employee_id]
+      );
     }
 
-    res.json({ message: `${role} deleted successfully`, role, id });
+    await queryAsync('COMMIT');
+
+    // Notify stakeholders
+    const { sendNotification } = require('./notificationService');
+    await sendNotification({
+      to: 'it@company.com,finance@company.com',
+      subject: `Employee ${exitType.charAt(0).toUpperCase() + exitType.slice(1)}`,
+      message: `Employee ${existingRecord.employee_id} marked as ${status} by ${req.user.employee_id}. Reason: ${reason || 'None'}.`,
+    });
+
+    res.json({ message: `${role} marked as ${status} successfully`, status });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: "Database error during deletion" });
+    await queryAsync('ROLLBACK');
+    console.error('DB error:', err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: 'Database error during operation' });
   }
 };
+
 
 const getCurrentUserProfile = async (req, res) => {
   const userRole = req.user.role;
   const userId = req.user.employee_id;
 
   try {
-    const baseUrl =
-      process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
-    const query = `SELECT employee_id, full_name, email, mobile, emergency_phone, department_name, designation_name, blood_group, gender, dob,
-                          CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url
-                   FROM hrms_users WHERE employee_id = ? AND role = ?`;
-    const [user] = await queryAsync(query, [baseUrl, userId, userRole]);
+    const query = `
+      SELECT employee_id, full_name, email, mobile, emergency_phone, department_name, designation_name, blood_group, gender, dob,
+             photo_url
+      FROM hrms_users 
+      WHERE employee_id = ? AND role = ?
+    `;
+
+    const [user] = await queryAsync(query, [userId, userRole]);
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });

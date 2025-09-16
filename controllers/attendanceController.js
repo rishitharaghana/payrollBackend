@@ -4,18 +4,22 @@ const util = require('util');
 const queryAsync = util.promisify(pool.query).bind(pool);
 
 const markAttendance = async (req, res) => {
-  const { employee_id, date, login_time, logout_time, recipient, location } = req.body;
+  const { employee_id, date, login_time, logout_time, recipient_id, location } = req.body;
   const { role, id } = req.user;
 
-  if (!employee_id || !date || !login_time || !recipient || !location) {
-    return res.status(400).json({ error: 'Date, login time, recipient, and location are required' });
+  console.log("markAttendance called with body:", req.body, "user:", { role, id });
+
+  if (!employee_id || !date || !login_time || !location) {
+    console.log("Validation failed. Missing fields:", {
+      employee_id,
+      date,
+      login_time,
+      location,
+    });
+    return res.status(400).json({ error: "Date, login time, and location are required" });
   }
 
-  if (!['super_admin', 'hr'].includes(recipient)) {
-    return res.status(400).json({ error: "Invalid recipient. Must be 'super_admin' or 'hr'" });
-  }
-
-  if (!['Office', 'Remote'].includes(location)) {
+  if (!["Office", "Remote"].includes(location)) {
     return res.status(400).json({ error: "Invalid location. Must be 'Office' or 'Remote'" });
   }
 
@@ -23,10 +27,10 @@ const markAttendance = async (req, res) => {
     const login = new Date(`1970-01-01T${login_time}:00`);
     const logout = new Date(`1970-01-01T${logout_time}:00`);
     if (isNaN(login) || isNaN(logout)) {
-      return res.status(400).json({ error: 'Invalid login or logout time format' });
+      return res.status(400).json({ error: "Invalid login or logout time format" });
     }
     if (logout <= login) {
-      return res.status(400).json({ error: 'Logout time must be after login time' });
+      return res.status(400).json({ error: "Logout time must be after login time" });
     }
   }
 
@@ -35,44 +39,75 @@ const markAttendance = async (req, res) => {
       `SELECT employee_id FROM hrms_users WHERE id = ? AND role = ?`,
       [id, role]
     );
-    if (!user || (user.employee_id !== employee_id && !['super_admin', 'hr'].includes(role))) {
-      return res.status(403).json({ error: 'Unauthorized to mark attendance for this employee' });
+    if (!user || (user.employee_id !== employee_id && !["super_admin", "hr"].includes(role))) {
+      return res.status(403).json({ error: "Unauthorized to mark attendance for this employee" });
+    }
+
+    // For HR, force recipient to be 'super_admin'
+    let finalRecipientId = recipient_id;
+    if (role === "hr") {
+      const [superAdmin] = await queryAsync(
+        `SELECT employee_id FROM hrms_users WHERE role = 'super_admin' AND status = 'active' LIMIT 1`
+      );
+      if (!superAdmin) {
+        return res.status(400).json({ error: "No active Super Admin found" });
+      }
+      finalRecipientId = superAdmin.employee_id;
+    } else if (role !== "super_admin") {
+      // Validate recipient_id for non-HR roles
+      const [recipient] = await queryAsync(
+        `SELECT employee_id, full_name, role FROM hrms_users WHERE (employee_id = ? AND role = 'hr' AND status = 'active') OR (full_name = ? AND role = 'super_admin' AND status = 'active')`,
+        [recipient_id, recipient_id]
+      );
+      if (!recipient) {
+        console.log("Recipient validation failed for recipient_id:", recipient_id);
+        return res.status(400).json({ error: "Invalid recipient. Must be an active HR or Super Admin" });
+      }
+      finalRecipientId = recipient.employee_id;
     }
 
     const [existingAttendance] = await queryAsync(
-      'SELECT * FROM attendance WHERE employee_id = ? AND date = ?',
+      "SELECT * FROM attendance WHERE employee_id = ? AND date = ?",
       [employee_id, date]
     );
     if (existingAttendance) {
-      return res.status(400).json({ error: 'Attendance already marked for this date' });
+      return res.status(400).json({ error: "Attendance already marked for this date" });
     }
 
-    const status = ['hr', 'super_admin'].includes(role) ? 'Approved' : 'Pending';
+    const status = ["hr", "super_admin"].includes(role) ? "Approved" : "Pending";
 
     const query = `
       INSERT INTO attendance (employee_id, date, login_time, logout_time, status, recipient, location, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
     `;
-    const values = [employee_id, date, login_time, logout_time || null, status, recipient, location];
+    const values = [
+      employee_id,
+      date,
+      login_time,
+      logout_time || null,
+      status,
+      finalRecipientId,
+      location,
+    ];
 
     const result = await queryAsync(query, values);
 
     res.status(201).json({
-      message: `Attendance marked successfully${status === 'Approved' ? ' and auto-approved' : ''}`,
+      message: `Attendance marked successfully${status === "Approved" ? " and auto-approved" : ""}`,
       data: {
         id: result.insertId,
         employee_id,
         date,
         login_time,
         logout_time,
-        recipient,
+        recipient_id: finalRecipientId,
         location,
         status,
       },
     });
   } catch (err) {
-    console.error('DB error in markAttendance:', err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: `Database error: ${err.message}` });
+    console.error("DB error in markAttendance:", err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.sqlMessage || err.message}` });
   }
 };
 
@@ -89,21 +124,16 @@ const fetchEmployeeAttendance = async (req, res) => {
     }
 
     const attendance = await queryAsync(
-      `SELECT id, employee_id, date, login_time, logout_time, recipient, location, status, 
+      `SELECT id, employee_id, date, login_time, logout_time, recipient AS recipient_id, location, status, 
               DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at
        FROM attendance 
        WHERE employee_id = ? 
        ORDER BY date DESC 
-       LIMIT 10`, // Limit to recent records for dashboard
+       LIMIT 10`,
       [user.employee_id]
     );
 
-    const [todayStatus] = await queryAsync(
-      `SELECT status, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') as lastUpdated
-       FROM attendance 
-       WHERE employee_id = ? AND date = CURDATE()`,
-      [user.employee_id]
-    );
+    console.log("fetchEmployeeAttendance raw data:", attendance);
 
     res.json({
       message: 'Attendance records fetched successfully',
@@ -112,17 +142,17 @@ const fetchEmployeeAttendance = async (req, res) => {
           id: record.id,
           employee_id: record.employee_id,
           date: record.date,
-          timeIn: record.login_time || 'N/A',
-          timeOut: record.logout_time || 'N/A',
+          login_time: record.login_time || 'N/A',
+          logout_time: record.logout_time || 'N/A',
           status: record.status,
-          recipient: record.recipient,
+          recipient_id: record.recipient_id, // Changed to recipient_id
           location: record.location,
           created_at: record.created_at,
           employee_name: user.full_name,
         })),
         attendanceStatus: {
-          today: todayStatus?.status || 'Not Recorded',
-          lastUpdated: todayStatus?.lastUpdated || 'N/A',
+          today: attendance.find((record) => record.date === new Date().toISOString().split('T')[0])?.status || 'Not Recorded',
+          lastUpdated: attendance.find((record) => record.date === new Date().toISOString().split('T')[0])?.created_at || 'N/A',
         },
       },
     });
@@ -159,6 +189,10 @@ const fetchAllAttendance = async (req, res) => {
       }
       query += ' WHERE u.department_name = ? AND a.recipient = ? ORDER BY a.date DESC';
       params = [deptHead.department_name, 'hr'];
+    } else if (role === 'super_admin') {
+      // Super Admin sees their own records and HR-approved records
+      query += ' WHERE (a.recipient = ? OR (a.recipient = ? AND a.status = ?)) ORDER BY a.date DESC';
+      params = ['super_admin', 'hr', 'Approved'];
     } else {
       query += ' WHERE a.recipient = ? ORDER BY a.date DESC';
       params = [role];
@@ -191,15 +225,11 @@ const updateAttendanceStatus = async (req, res) => {
 
   try {
     const [attendance] = await queryAsync(
-      'SELECT * FROM attendance WHERE id = ? AND recipient = ?',
-      [attendanceId, role]
+      'SELECT * FROM attendance WHERE id = ? AND recipient = ? AND status = ?',
+      [attendanceId, role, 'Pending']
     );
     if (!attendance) {
-      return res.status(404).json({ error: 'Attendance record not found or not authorized' });
-    }
-
-    if (attendance.status !== 'Pending') {
-      return res.status(400).json({ error: 'Only pending records can be updated' });
+      return res.status(404).json({ error: 'Attendance record not found, not authorized, or not pending' });
     }
 
     const query = 'UPDATE attendance SET status = ? WHERE id = ?';

@@ -309,19 +309,31 @@ const getRecipientOptions = async (req, res) => {
     let recipients = [];
     if (role === "employee" || role === "dept_head") {
       recipients = await queryAsync(
-        "SELECT employee_id, full_name FROM hrms_users WHERE role = 'hr'"
+        "SELECT employee_id AS identifier, full_name, role FROM hrms_users WHERE role = 'hr' AND status = 'active' AND employee_id IS NOT NULL AND employee_id != ''"
       );
     } else if (role === "hr") {
       recipients = await queryAsync(
-        "SELECT employee_id, full_name FROM hrms_users WHERE role = 'super_admin'"
+        "SELECT full_name AS identifier, full_name, role FROM hrms_users WHERE role = 'super_admin' AND status = 'active'"
+      );
+    } else if (role === "super_admin") {
+      recipients = await queryAsync(
+        "SELECT employee_id AS identifier, full_name, role FROM hrms_users WHERE role = 'hr' AND status = 'active' AND employee_id IS NOT NULL AND employee_id != '' UNION SELECT full_name AS identifier, full_name, role FROM hrms_users WHERE role = 'super_admin' AND status = 'active'"
       );
     } else {
       return res.status(403).json({ error: "Invalid role for fetching recipients" });
     }
+
     if (recipients.length === 0) {
-      return res.status(404).json({ error: "No recipients found for your role" });
+      return res.status(404).json({ error: "No valid recipients found for your role" });
     }
-    res.json(recipients);
+
+    const formattedRecipients = recipients.map((recipient) => ({
+      value: recipient.identifier, // employee_id for hr, full_name for super_admin
+      label: `${recipient.full_name} (${recipient.role === "super_admin" ? "Super Admin" : "HR"})`,
+      role: recipient.role,
+    }));
+
+    res.json(formattedRecipients);
   } catch (err) {
     console.error("DB error in getRecipientOptions:", err);
     res.status(500).json({ error: "Database error", details: err.sqlMessage || err.message });

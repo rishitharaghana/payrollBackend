@@ -8,7 +8,6 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 
 const cardStyles = ["modern", "classic", "minimal", "corporate"];
 
-// Use consistent uploadDir (relative to backend)
 const uploadDir = path.join(__dirname, "../Uploads");
 const cardDir = path.join(uploadDir, "cards");
 if (!fs.existsSync(cardDir)) {
@@ -16,8 +15,7 @@ if (!fs.existsSync(cardDir)) {
   fs.mkdirSync(cardDir, { recursive: true });
 }
 
-// Access assets in backend/Uploads/
-const assetPath = uploadDir; // Assets are in Uploads/
+const assetPath = uploadDir; 
 const backgroundImages = {
   modern: {
     front: path.join(assetPath, "ModernTempFront.png"),
@@ -38,10 +36,9 @@ const backgroundImages = {
 };
 const companyLogoPath = path.join(assetPath, "CompanyLogo.png");
 
-// Helper function to generate a PDF for a single employee card
 const generateCardPDF = async (employee, style, side = "both") => {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: [252, 144] }); // 3.5in x 2in at 72dpi
+    const doc = new PDFDocument({ size: [252, 144] });
     const outputPath = path.join(cardDir, `${employee.employee_id}_${style}_${Date.now()}.pdf`);
     const writeStream = fs.createWriteStream(outputPath);
     doc.pipe(writeStream);
@@ -59,7 +56,7 @@ const generateCardPDF = async (employee, style, side = "both") => {
         front: (doc) => {
           try {
             doc.image(backgroundImages.modern.front, 0, 0, { width: 252, height: 144 });
-            doc.image(companyLogoPath, 94.5, 48, { width: 63, height: 63 }); // Centered: (252-63)/2 = 94.5
+            doc.image(companyLogoPath, 94.5, 48, { width: 63, height: 63 }); 
           } catch (err) {
             console.error("Error adding modern front images:", err.message);
           }

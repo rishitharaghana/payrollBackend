@@ -38,10 +38,11 @@ const applyLeave = async (req, res) => {
     return res.status(401).json({ error: "No authentication token found. Please log in." });
   }
 
-  const [user] = await queryAsync(
-    "SELECT employee_id FROM hrms_users WHERE employee_id = ? AND status = 'active'",
+  const users = await queryAsync(
+    "SELECT employee_id, role FROM hrms_users WHERE employee_id = ? AND status = 'active'",
     [employee_id]
   );
+  const user = users[0];
   if (!user) {
     return res.status(403).json({ error: "User not found or inactive" });
   }
@@ -64,41 +65,69 @@ const applyLeave = async (req, res) => {
       return res.status(400).json({ error: "Invalid date range" });
     }
 
-    const [recipient] = await queryAsync(
-      "SELECT employee_id, role FROM hrms_users WHERE employee_id = ? AND role = 'hr'",
-      [recipient_id]
-    );
-    if (!recipient) {
-      return res.status(400).json({ error: "Recipient must be an HR user" });
+    // Prevent multiple leaves on the same day
+   const existingLeaves = await queryAsync(
+  `SELECT * FROM leaves
+   WHERE employee_id = ?
+   AND (
+         (DATE(start_date) <= DATE(?) AND DATE(end_date) >= DATE(?))
+         OR
+         (DATE(start_date) <= DATE(?) AND DATE(end_date) >= DATE(?))
+       )`,
+  [employee_id, start_date, start_date, end_date, end_date]
+);
+
+    if (existingLeaves.length > 0) {
+      return res.status(400).json({ error: "You already have a leave applied for the selected dates" });
     }
 
+    // Determine expected recipient role
+    let expectedRecipientRole = role === "employee" ? "hr" : "super_admin";
+
+    // Fetch recipient and validate
+    const recipients = await queryAsync(
+      "SELECT employee_id, role FROM hrms_users WHERE employee_id = ? AND role = ? AND status = 'active'",
+      [recipient_id, expectedRecipientRole]
+    );
+    const recipient = recipients[0];
+    if (!recipient) {
+      return res.status(400).json({ error: `Recipient must be an active ${expectedRecipientRole}` });
+    }
+
+    // Check paid leave balance
     if (leave_status === "Paid") {
       const currentYear = new Date().getFullYear();
-      const [balance] = await queryAsync(
+      const balances = await queryAsync(
         "SELECT balance FROM leave_balances WHERE employee_id = ? AND leave_type = ? AND year = ?",
         [employee_id, 'paid', currentYear]
       );
+      const balance = balances[0];
       if (!balance || balance.balance < total_days) {
         return res.status(400).json({ error: "Insufficient paid leave balance" });
       }
     }
 
     const currentTime = new Date().toISOString().slice(0, 19).replace("T", " ");
-    const [result] = await queryAsync(
+
+    // Insert leave
+    const results = await queryAsync(
       `INSERT INTO leaves (employee_id, start_date, end_date, reason, leave_type, leave_status, total_days, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)`,
       [employee_id, start_date, end_date, reason, 'paid', leave_status, total_days, currentTime, currentTime]
     );
+    const result = results; // queryAsync returns result object directly
 
+    // Insert recipient mapping
     await queryAsync(
       "INSERT INTO leave_recipients (leave_id, recipient_id) VALUES (?, ?)",
       [result.insertId, recipient_id]
     );
 
+    // Deduct paid leave balance
     if (leave_status === "Paid") {
       await queryAsync(
         "UPDATE leave_balances SET balance = balance - ? WHERE employee_id = ? AND leave_type = ? AND year = ?",
-        [total_days, employee_id, 'paid', currentYear]
+        [total_days, employee_id, 'paid', new Date().getFullYear()]
       );
     }
 
@@ -108,6 +137,7 @@ const applyLeave = async (req, res) => {
     res.status(500).json({ error: "Database error", details: err.sqlMessage });
   }
 };
+
 
 const updateLeaveStatus = async (req, res) => {
   const { leave_id, status } = req.body;

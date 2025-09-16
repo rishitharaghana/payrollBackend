@@ -1018,7 +1018,6 @@ const deleteEmployee = async (req, res) => {
   }
 };
 
-
 const getCurrentUserProfile = async (req, res) => {
   const userRole = req.user.role;
   const userId = req.user.employee_id;
@@ -1136,14 +1135,19 @@ const getEmployeeProgress = async (req, res) => {
 
 const getEmployeePersonalDetails = async (req, res) => {
   const userRole = req.user.role;
+  const userId = req.user.employee_id;
   const { employeeId } = req.params;
 
-  if (userRole !== "super_admin") {
-    return res
-      .status(403)
-      .json({
-        error: "Access denied: Only super_admins can view personal details",
-      });
+  if (!employeeId || employeeId === "undefined") {
+    return res.status(400).json({ error: "Employee ID is required and cannot be undefined" });
+  }
+
+  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+
+  if (userRole === "employee" && employeeId !== userId) {
+    return res.status(403).json({ error: "Access denied: You can only view your own personal details" });
   }
 
   try {
@@ -1158,22 +1162,20 @@ const getEmployeePersonalDetails = async (req, res) => {
     const [personalDetails] = await queryAsync(
       `SELECT employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
               present_address, previous_address, position_type, employer_id_name, position_title,
-              employment_type, joining_date, contract_end_date
+              employment_type, joining_date, contract_end_date, pan_number, adhar_number
        FROM personal_details WHERE employee_id = ?`,
       [employeeId]
     );
 
-    if (!personalDetails) {
-      return res.status(404).json({ error: "Personal details not found" });
-    }
-
     res.json({
-      message: "Personal details fetched successfully",
-      data: personalDetails,
+      message: personalDetails
+        ? "Personal details fetched successfully"
+        : "No personal details found for this employee",
+      data: personalDetails || null,
     });
   } catch (err) {
     console.error("DB error:", err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
@@ -1257,14 +1259,19 @@ const getEmployeeDocuments = async (req, res) => {
 
 const getEmployeeBankDetails = async (req, res) => {
   const userRole = req.user.role;
+  const userId = req.user.employee_id;
   const { employeeId } = req.params;
 
-  if (userRole !== "super_admin") {
-    return res
-      .status(403)
-      .json({
-        error: "Access denied: Only super_admins can view bank details",
-      });
+  if (!employeeId || employeeId === "undefined") {
+    return res.status(400).json({ error: "Employee ID is required and cannot be undefined" });
+  }
+
+  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+
+  if (userRole === "employee" && employeeId !== userId) {
+    return res.status(403).json({ error: "Access denied: You can only view your own bank details" });
   }
 
   try {
@@ -1282,20 +1289,295 @@ const getEmployeeBankDetails = async (req, res) => {
       [employeeId]
     );
 
-    if (!bankDetails) {
-      return res.status(404).json({ error: "Bank details not found" });
-    }
-
     res.json({
-      message: "Bank details fetched successfully",
-      data: bankDetails,
+      message: bankDetails
+        ? "Bank details fetched successfully"
+        : "No bank details found for this employee",
+      data: bankDetails || null,
     });
   } catch (err) {
     console.error("DB error:", err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
+const updateEmployeePersonalDetails = async (req, res) => {
+  const userRole = req.user.role;
+  const userId = req.user.employee_id;
+  const {
+    employeeId = req.user.employee_id,
+    fullName,
+    email,
+    phone,
+    fatherName,
+    motherName,
+    gender,
+    alternatePhone,
+    presentAddress,
+    previousAddress,
+    positionType,
+    employerIdName,
+    positionTitle,
+    employmentType,
+    joiningDate,
+    contractEndDate,
+    pan_number,
+    adhar_number,
+  } = req.body;
+
+  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+  if (userRole !== "super_admin" && employeeId !== userId) {
+    return res.status(403).json({ error: "Access denied: You can only update your own personal details" });
+  }
+
+  if (!fullName?.trim() || !email?.trim() || !phone?.trim() || !gender || !employeeId) {
+    return res.status(400).json({ error: "Full name, email, phone, gender, and employee ID are required" });
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: "Invalid email format" });
+  }
+  if (!/^[0-9]{10}$/.test(phone)) {
+    return res.status(400).json({ error: "Phone must be a 10-digit number" });
+  }
+
+  try {
+    const [user] = await queryAsync(
+      `SELECT employee_id, full_name, email, mobile FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee')`,
+      [employeeId]
+    );
+    if (!user) {
+      return res.status(404).json({ error: `${userRole} not found` });
+    }
+
+    if (
+      userRole !== "super_admin" &&
+      (fullName !== user.full_name || email !== user.email || phone !== user.mobile)
+    ) {
+      return res.status(400).json({
+        error: `Full name, email, and phone must match your ${userRole} record`,
+      });
+    }
+
+    const [existingDetails] = await queryAsync(
+      `SELECT employee_id FROM personal_details WHERE employee_id = ?`,
+      [employeeId]
+    );
+    if (!existingDetails) {
+      return res.status(404).json({ error: "Personal details not found for this employee" });
+    }
+
+    const [existingMobile] = await queryAsync(
+      `SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ? AND employee_id != ?`,
+      [phone.trim(), employeeId]
+    );
+    if (existingMobile) {
+      return res.status(400).json({ error: "Phone number already in use" });
+    }
+
+    const [existingEmail] = await queryAsync(
+      `SELECT email FROM hrms_users WHERE TRIM(LOWER(email)) = ? AND employee_id != ?`,
+      [email.trim().toLowerCase(), employeeId]
+    );
+    if (existingEmail) {
+      return res.status(400).json({ error: "Email already in use" });
+    }
+
+    const updateQuery = `
+      UPDATE personal_details SET
+        full_name = ?, father_name = ?, mother_name = ?, phone = ?, alternate_phone = ?, email = ?, gender = ?,
+        present_address = ?, previous_address = ?, position_type = ?, employer_id_name = ?, position_title = ?,
+        employment_type = ?, joining_date = ?, pan_number = ?, adhar_number = ?, contract_end_date = ?, updated_by = ?
+      WHERE employee_id = ?
+    `;
+    const values = [
+      user.full_name,
+      fatherName || null,
+      motherName || null,
+      user.mobile,
+      alternatePhone || null,
+      user.email,
+      gender,
+      presentAddress || null,
+      previousAddress || null,
+      positionType || null,
+      employerIdName || null,
+      positionTitle || null,
+      employmentType || null,
+      joiningDate || null,
+      pan_number || null,
+      adhar_number || null,
+      contractEndDate || null,
+      userId,
+      employeeId,
+    ];
+
+    const result = await queryAsync(updateQuery, values);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Personal details not found for update" });
+    }
+
+    res.json({
+      message: "Personal details updated successfully",
+      data: { employee_id: employeeId },
+    });
+  } catch (err) {
+    console.error("DB error:", err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.message}` });
+  }
+};
+
+const updateEducationDetails = async (req, res) => {
+  const userRole = req.user.role;
+  const userId = req.user.employee_id;
+  let {
+    employeeId = userId,
+    tenthClassName,
+    tenthClassMarks,
+    intermediateName,
+    intermediateMarks,
+    graduationName,
+    graduationMarks,
+    postgraduationName,
+    postgraduationMarks,
+  } = req.body;
+
+  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+  if (userRole !== "super_admin" && employeeId !== userId) {
+    return res.status(403).json({ error: "Access denied: You can only update your own education details" });
+  }
+
+  const numericFields = [
+    { name: "tenthClassMarks", value: tenthClassMarks },
+    { name: "intermediateMarks", value: intermediateMarks },
+    { name: "graduationMarks", value: graduationMarks },
+    { name: "postgraduationMarks", value: postgraduationMarks },
+  ];
+  for (const field of numericFields) {
+    if (
+      field.value &&
+      (isNaN(field.value) || Number(field.value) < 0 || Number(field.value) > 100)
+    ) {
+      return res.status(400).json({
+        error: `Invalid ${field.name} (must be a number between 0 and 100)`,
+      });
+    }
+  }
+
+  try {
+    const [employee] = await queryAsync(
+      `SELECT employee_id FROM hrms_users WHERE UPPER(TRIM(employee_id)) = ? AND role IN ('hr', 'employee')`,
+      [employeeId.trim().toUpperCase()]
+    );
+    if (!employee) {
+      return res.status(404).json({ error: `${userRole} not found` });
+    }
+
+    const [existingDetails] = await queryAsync(
+      `SELECT employee_id FROM education_details WHERE UPPER(TRIM(employee_id)) = ?`,
+      [employeeId.trim().toUpperCase()]
+    );
+    if (!existingDetails) {
+      return res.status(404).json({ error: "Education details not found for this employee" });
+    }
+
+    const updateQuery = `
+      UPDATE education_details SET
+        tenth_class_name = ?, tenth_class_marks = ?, intermediate_name = ?,
+        intermediate_marks = ?, graduation_name = ?, graduation_marks = ?,
+        postgraduation_name = ?, postgraduation_marks = ?, updated_by = ?
+      WHERE employee_id = ?
+    `;
+    const values = [
+      tenthClassName || null,
+      tenthClassMarks || null,
+      intermediateName || null,
+      intermediateMarks || null,
+      graduationName || null,
+      graduationMarks || null,
+      postgraduationName || null,
+      postgraduationMarks || null,
+      userId,
+      employeeId.trim().toUpperCase(),
+    ];
+
+    const result = await queryAsync(updateQuery, values);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Education details not found for update" });
+    }
+
+    res.json({
+      message: "Education details updated successfully",
+      data: { employee_id: employeeId.trim().toUpperCase() },
+    });
+  } catch (err) {
+    console.error("DB error:", err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.message}` });
+  }
+};
+
+const updateBankDetails = async (req, res) => {
+  const userRole = req.user.role;
+  const userId = req.user.employee_id;
+  const { employeeId = req.user.employee_id, bankAccountNumber, ifscCode } = req.body;
+
+  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+  if (userRole !== "super_admin" && employeeId !== userId) {
+    return res.status(403).json({ error: "Access denied: You can only update your own bank details" });
+  }
+
+  if (!employeeId || !bankAccountNumber || !ifscCode) {
+    return res.status(400).json({
+      error: "Employee ID, bank account number, and IFSC code are required",
+    });
+  }
+  if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode)) {
+    return res.status(400).json({ error: "Invalid IFSC code format" });
+  }
+
+  try {
+    const [employee] = await queryAsync(
+      `SELECT employee_id, full_name FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee')`,
+      [employeeId]
+    );
+    if (!employee) {
+      return res.status(404).json({ error: `${userRole} not found` });
+    }
+
+    const [existingBank] = await queryAsync(
+      `SELECT employee_id FROM bank_details WHERE employee_id = ?`,
+      [employeeId]
+    );
+    if (!existingBank) {
+      return res.status(404).json({ error: "Bank details not found for this employee" });
+    }
+
+    const updateQuery = `
+      UPDATE bank_details SET
+        bank_account_number = ?, ifsc_number = ?, updated_by = ?
+      WHERE employee_id = ?
+    `;
+    const values = [bankAccountNumber, ifscCode, userId, employeeId];
+
+    const result = await queryAsync(updateQuery, values);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Bank details not found for update" });
+    }
+
+    res.json({
+      message: "Bank details updated successfully",
+      data: { employee_id: employeeId },
+    });
+  } catch (err) {
+    console.error("DB error:", err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.message}` });
+  }
+};
 module.exports = {
   createEmployee,
   createEmployeePersonalDetails,
@@ -1312,4 +1594,7 @@ module.exports = {
   getEmployeeEducationDetails,
   getEmployeeDocuments,
   getEmployeeBankDetails,
+  updateBankDetails,
+  updateEducationDetails,
+  updateEmployeePersonalDetails,
 };

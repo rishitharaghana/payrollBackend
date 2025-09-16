@@ -17,6 +17,9 @@ const {
   getEmployeeBankDetails,
   getEmployeeDocuments,
   getEmployeeEducationDetails,
+  updateEmployeePersonalDetails,
+  updateEducationDetails,
+  updateBankDetails,
 } = require("../controllers/employeeController");
 
 router.post("/employees", authenticateToken, createEmployee);
@@ -30,10 +33,12 @@ router.delete("/employees/:id/terminate", authenticateToken, deleteEmployee);
 router.get("/profile", authenticateToken, getCurrentUserProfile);
 router.get('/employees/progress', authenticateToken, getEmployeeProgress);
 router.get('/employee/:id', authenticateToken, getEmployeeById);
-router.get('/personal-details/:employeeId', authenticateToken, getEmployeePersonalDetails);
-router.get('/employees/bank-details', authenticateToken, getEmployeeBankDetails);
-router.get('/documents/employeeId', authenticateToken, getEmployeeDocuments);
-router.get('/education-details/employeeId', authenticateToken, getEmployeeEducationDetails);
-
+router.get('/employees/personal-details/:employeeId', authenticateToken, getEmployeePersonalDetails);
+router.get('/employees/bank-details/:employeeId', authenticateToken, getEmployeeBankDetails);
+router.get('/employees/documents/:employeeId', authenticateToken, getEmployeeDocuments);
+router.get('/employees/education-details/:employeeId', authenticateToken, getEmployeeEducationDetails);
+router.put('/employees/personal-details/:employeeId', authenticateToken, updateEmployeePersonalDetails);
+router.put('/employees/education-details/:employeeId', authenticateToken, updateEducationDetails);
+router.put('/employees/bank-details/:employeeId', authenticateToken, updateBankDetails);
 
 module.exports = router;

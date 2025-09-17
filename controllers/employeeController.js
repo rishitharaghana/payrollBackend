@@ -1049,6 +1049,7 @@ const getCurrentUserProfile = async (req, res) => {
         blood_group: user.blood_group,
         gender: user.gender,
         dob: user.dob,
+        join_date: user.join_date,
         photo_url: user.photo_url,
       },
     });

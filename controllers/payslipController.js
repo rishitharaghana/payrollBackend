@@ -40,13 +40,17 @@ const calculateTax = (gross) => {
 const generatePayrollForEmployee = async (employeeId, month, userRole, userId) => {
   try {
     const [employee] = await queryAsync(
-      `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
+      `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name, joining_date, status, role
        FROM hrms_users
-       WHERE employee_id = ? AND status = 'active'`,
+       WHERE employee_id = ?`,
       [employeeId]
     );
-    if (!employee) throw new Error("Employee not found or inactive");
+    if (!employee) throw new Error("Employee not found");
+    if (employee.status !== "active") throw new Error(`Employee is not active (status: ${employee.status})`);
     if (!employee.basic_salary) throw new Error("Employee has no salary data");
+    if (["employee", "manager"].includes(employee.role) && !employee.joining_date) {
+      throw new Error("Joining date is required for employee/manager roles");
+    }
 
     const [existingPayroll] = await queryAsync(
       `SELECT id FROM payroll WHERE employee_id = ? AND month = ?`,
@@ -54,11 +58,44 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
     );
     if (existingPayroll) return null;
 
-    // Calculate leave and attendance data
-    const { unpaidLeaveDays, totalWorkingDays, presentDays } = await calculateLeaveAndAttendance(employeeId, month);
+    const { unpaidLeaveDays, totalWorkingDays, presentDays, paidLeaveDays, holidays } = await calculateLeaveAndAttendance(employeeId, month);
 
-    if (!totalWorkingDays) {
-      throw new Error("Total working days cannot be zero for salary calculation");
+    if (totalWorkingDays === 0) {
+      const payrollData = {
+        employee_id: employeeId,
+        employee_name: employee.full_name,
+        department: employee.department_name || "HR",
+        designation_name: employee.designation_name || null,
+        gross_salary: 0,
+        net_salary: 0,
+        pf_deduction: 0,
+        esic_deduction: 0,
+        professional_tax: 0,
+        tax_deduction: 0,
+        unpaid_leave_deduction: 0,
+        basic_salary: 0,
+        hra: 0,
+        da: 0,
+        other_allowances: 0,
+        status: userRole === "employee" ? "Approved" : userRole === "super_admin" ? "Paid" : "Pending",
+        payment_method: "None",
+        payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
+        month,
+        created_by: userId,
+        company_id: COMPANY_CONFIG.company_id,
+        unpaid_leave_days: unpaidLeaveDays,
+        paid_leave_days: paidLeaveDays,
+        total_working_days: totalWorkingDays,
+        present_days: presentDays,
+        holidays: holidays,
+      };
+
+      await queryAsync("INSERT INTO payroll SET ?", payrollData);
+      await queryAsync(
+        "INSERT INTO payroll_audit (employee_id, month, action, details, created_at) VALUES (?, ?, ?, ?, NOW())",
+        [employeeId, month, "no_salary", "No salary calculated due to zero working days"]
+      );
+      return payrollData;
     }
 
     const [bankDetails] = await queryAsync(
@@ -66,18 +103,14 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
       [employeeId]
     );
 
-    // Calculate gross salary before deductions
     const gross_salary =
       (parseFloat(employee.basic_salary) || 0) +
       (parseFloat(employee.allowances) || 0) +
       (parseFloat(employee.bonuses) || 0);
-
-    // Calculate unpaid leave deduction
     const dailyRate = gross_salary / totalWorkingDays;
     const unpaid_leave_deduction = unpaidLeaveDays * dailyRate;
     const adjusted_gross_salary = gross_salary - unpaid_leave_deduction;
 
-    // Calculate other deductions
     const pf_deduction = Math.min(adjusted_gross_salary * 0.12, 1800);
     const esic_deduction = adjusted_gross_salary <= 21000 ? adjusted_gross_salary * 0.0075 : 0;
     const professional_tax = adjusted_gross_salary <= 15000 ? 0 : 200;
@@ -109,13 +142,14 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
       created_by: userId,
       company_id: COMPANY_CONFIG.company_id,
       unpaid_leave_days: unpaidLeaveDays,
+      paid_leave_days: paidLeaveDays,
       total_working_days: totalWorkingDays,
       present_days: presentDays,
+      holidays: holidays,
     };
 
     await queryAsync("INSERT INTO payroll SET ?", payrollData);
-    
-    // Log unpaid leave deduction
+
     if (unpaid_leave_deduction > 0) {
       await queryAsync(
         "INSERT INTO payroll_audit (employee_id, month, action, details, created_at) VALUES (?, ?, ?, ?, NOW())",
@@ -226,7 +260,7 @@ const drawTable = (doc, title, data, startX, startY) => {
     doc
       .font(isBold ? "Times-Bold" : "Times-Roman")
       .text(label, startX + 5, y + 5, { width: col1Width })
-      .text(value, startX + col1Width, y + 5, {
+      .text(value, startX + col1Width - 30 , y + 5, {
         width: col2Width,
         align: "right",
       });
@@ -453,7 +487,7 @@ const generatePayslip = async (req, res) => {
       ["ESIC", formatCurrency(employee.esic_deduction)],
       ["Professional Tax", formatCurrency(employee.professional_tax)],
       ["Income Tax", formatCurrency(employee.tax_deduction)],
-      ["Unpaid Leave Deduction", formatCurrency(employee.unpaid_leave_deduction)],
+      ["Leave Deduction", formatCurrency(employee.unpaid_leave_deduction)],
       [
         "Total Deductions",
         formatCurrency(

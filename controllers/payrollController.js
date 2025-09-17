@@ -25,10 +25,50 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
   const [year, monthNum] = month.split("-").map(Number);
   const startDate = new Date(year, monthNum - 1, 1);
   const endDate = new Date(year, monthNum, 0);
+  const today = new Date("2025-09-17T14:37:00+05:30"); // Current date: 2025-09-17 02:37 PM IST
+  const calculationEndDate = today < endDate ? today : endDate;
   const startDateStr = startDate.toISOString().split("T")[0];
-  const endDateStr = endDate.toISOString().split("T")[0];
+  const endDateStr = calculationEndDate.toISOString().split("T")[0];
 
   try {
+    const [employee] = await queryAsync(
+      "SELECT join_date, status, role FROM hrms_users WHERE employee_id = ?",
+      [employeeId]
+    );
+    if (!employee) {
+      throw new Error("Employee not found");
+    }
+    if (employee.status !== "active") {
+      console.warn(`Employee ${employeeId} is not active (status: ${employee.status})`);
+      return {
+        paidLeaveDays: 0,
+        unpaidLeaveDays: 0,
+        leaveDetails: [],
+        presentDays: 0,
+        holidays: 0,
+        totalWorkingDays: 0,
+      };
+    }
+
+    const joinDate = employee.join_date ? new Date(employee.join_date) : null;
+    if (!joinDate && ["employee", "manager"].includes(employee.role)) {
+      console.error(`Missing join_date for employee ${employeeId} with role ${employee.role}`);
+      throw new Error("Join date is required for employee/manager roles");
+    }
+    const effectiveStartDate = joinDate && joinDate > startDate ? joinDate : startDate;
+
+    if (effectiveStartDate > calculationEndDate) {
+      console.log(`Employee ${employeeId} not eligible for ${month} (join_date: ${joinDate})`);
+      return {
+        paidLeaveDays: 0,
+        unpaidLeaveDays: 0,
+        leaveDetails: [],
+        presentDays: 0,
+        holidays: 0,
+        totalWorkingDays: 0,
+      };
+    }
+
     const holidays = await queryAsync(
       "SELECT date FROM holidays WHERE date BETWEEN ? AND ?",
       [startDateStr, endDateStr]
@@ -47,8 +87,8 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
     let unpaidLeaveDays = 0;
     let leaveDetails = [];
     for (const leave of leaves) {
-      const start = new Date(Math.max(new Date(leave.start_date), startDate));
-      const end = new Date(Math.min(new Date(leave.end_date), endDate));
+      const start = new Date(Math.max(new Date(leave.start_date), effectiveStartDate));
+      const end = new Date(Math.min(new Date(leave.end_date), calculationEndDate));
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         const dateStr = d.toISOString().split("T")[0];
         const isHoliday = holidayDates.includes(dateStr);
@@ -72,19 +112,31 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
 
     const attendance = await queryAsync(
       `SELECT date FROM attendance 
-       WHERE employee_id = ? AND status = 'Present' 
+       WHERE employee_id = ? AND status IN ('Present', 'Approved') 
        AND date BETWEEN ? AND ?`,
       [employeeId, startDateStr, endDateStr]
     );
     const presentDays = attendance.length;
 
     let totalWorkingDays = 0;
-    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+    for (let d = new Date(effectiveStartDate); d <= calculationEndDate; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split("T")[0];
       const isHoliday = holidayDates.includes(dateStr);
       const isWeekend = d.getDay() === 0 || d.getDay() === 6;
       if (!isHoliday && !isWeekend) totalWorkingDays++;
     }
+
+    console.log(`calculateLeaveAndAttendance for employee ${employeeId}, month ${month}:`, {
+      join_date: employee.join_date,
+      role: employee.role,
+      status: employee.status,
+      effectiveStartDate,
+      calculationEndDate,
+      totalWorkingDays,
+      presentDays,
+      paidLeaveDays,
+      unpaidLeaveDays,
+    });
 
     return {
       paidLeaveDays,
@@ -252,7 +304,7 @@ const generatePayroll = async (req, res) => {
   try {
     validateMonth(month);
     const employees = await queryAsync(
-      `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
+      `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name, join_date
        FROM hrms_users
        WHERE role IN ('employee', 'hr', 'dept_head', 'manager') AND status = 'active'`
     );
@@ -267,6 +319,10 @@ const generatePayroll = async (req, res) => {
         console.warn(`Skipping employee ${emp.employee_id} due to missing salary data`);
         continue;
       }
+      if (["employee", "manager"].includes(emp.role) && !emp.join_date) {
+        console.warn(`Skipping employee ${emp.employee_id} due to missing join_date`);
+        continue;
+      }
 
       const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays } = await calculateLeaveAndAttendance(emp.employee_id, month);
 
@@ -274,10 +330,16 @@ const generatePayroll = async (req, res) => {
         parseFloat(emp.basic_salary || 0) +
         parseFloat(emp.allowances || 0) +
         parseFloat(emp.bonuses || 0);
-      const dailyRate = gross_salary / totalWorkingDays;
-      const salaryAdjustment = unpaidLeaveDays * dailyRate;
 
-      const adjustedGrossSalary = gross_salary - salaryAdjustment;
+      let adjustedGrossSalary = gross_salary;
+      let salaryAdjustment = 0;
+      if (totalWorkingDays > 0) {
+        const dailyRate = gross_salary / totalWorkingDays;
+        salaryAdjustment = unpaidLeaveDays * dailyRate;
+        const effectiveWorkingDays = presentDays + paidLeaveDays;
+        adjustedGrossSalary = effectiveWorkingDays * dailyRate;
+      }
+
       const pf_deduction = Math.min(adjustedGrossSalary * 0.12, 1800);
       const esic_deduction = adjustedGrossSalary <= 21000 ? adjustedGrossSalary * 0.0075 : 0;
       const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
@@ -295,10 +357,10 @@ const generatePayroll = async (req, res) => {
         esic_deduction,
         professional_tax,
         tax_deduction,
-        basic_salary: parseFloat(emp.basic_salary) || 0,
-        hra: (parseFloat(emp.allowances) || 0) * 0.4,
-        da: (parseFloat(emp.allowances) || 0) * 0.2,
-        other_allowances: (parseFloat(emp.allowances) || 0) * 0.4,
+        basic_salary: totalWorkingDays > 0 ? (parseFloat(emp.basic_salary) * (presentDays + paidLeaveDays) / totalWorkingDays) || 0 : 0,
+        hra: totalWorkingDays > 0 ? (parseFloat(emp.allowances) * 0.4 * (presentDays + paidLeaveDays) / totalWorkingDays) || 0 : 0,
+        da: totalWorkingDays > 0 ? (parseFloat(emp.allowances) * 0.5 * (presentDays + paidLeaveDays) / totalWorkingDays) || 0 : 0,
+        other_allowances: totalWorkingDays > 0 ? (parseFloat(emp.allowances) * 0.1 * (presentDays + paidLeaveDays) / totalWorkingDays) || 0 : 0,
         net_salary,
         status: userRole === "super_admin" ? "Paid" : "Pending",
         payment_method: "Bank Transfer",
@@ -313,6 +375,20 @@ const generatePayroll = async (req, res) => {
         total_working_days: totalWorkingDays,
       };
       await queryAsync("INSERT INTO payroll SET ?", payrollData);
+
+      if (unpaidLeaveDays > 0 || totalWorkingDays === 0) {
+        await queryAsync(
+          "INSERT INTO audit_logs (action, employee_id, details, performed_at) VALUES (?, ?, ?, NOW())",
+          [
+            totalWorkingDays === 0 ? "NO_SALARY" : "UNPAID_LEAVE_DEDUCTION",
+            emp.employee_id,
+            totalWorkingDays === 0
+              ? `No salary calculated for ${month} due to zero working days`
+              : `Deducted ${formatCurrency(salaryAdjustment)} for ${unpaidLeaveDays} unpaid leave days in ${month}`,
+          ]
+        );
+      }
+
       payrolls.push(payrollData);
     }
 
@@ -349,16 +425,22 @@ const generatePayrollForEmployee = async (req, res) => {
   try {
     validateMonth(month);
     const [employee] = await queryAsync(
-      `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
+      `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name, join_date, status, role
        FROM hrms_users
-       WHERE employee_id = ? AND status = 'active'`,
+       WHERE employee_id = ?`,
       [employeeId]
     );
     if (!employee) {
-      return res.status(404).json({ error: "Employee not found or inactive" });
+      return res.status(404).json({ error: "Employee not found" });
+    }
+    if (employee.status !== "active") {
+      return res.status(400).json({ error: `Employee is not active (status: ${employee.status})` });
     }
     if (!employee.basic_salary) {
       return res.status(400).json({ error: "Employee has no salary data" });
+    }
+    if (["employee", "manager"].includes(employee.role) && !employee.join_date) {
+      return res.status(400).json({ error: "Join date is required for employee/manager roles" });
     }
 
     const [existingPayroll] = await queryAsync(
@@ -373,6 +455,47 @@ const generatePayrollForEmployee = async (req, res) => {
 
     const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays } = await calculateLeaveAndAttendance(employeeId, month);
 
+    if (totalWorkingDays === 0) {
+      const payrollData = {
+        employee_id: employeeId,
+        employee_name: employee.full_name,
+        department: employee.department_name || "HR",
+        designation_name: employee.designation_name || null,
+        gross_salary: 0,
+        net_salary: 0,
+        pf_deduction: 0,
+        esic_deduction: 0,
+        professional_tax: 0,
+        tax_deduction: 0,
+        basic_salary: 0,
+        hra: 0,
+        da: 0,
+        other_allowances: 0,
+        status: userRole === "super_admin" ? "Paid" : "Pending",
+        payment_method: "None",
+        payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
+        month,
+        created_by: userId,
+        company_id: COMPANY_CONFIG.company_id,
+        paid_leave_days: paidLeaveDays,
+        unpaid_leave_days: unpaidLeaveDays,
+        present_days: presentDays,
+        holidays: holidays,
+        total_working_days: totalWorkingDays,
+      };
+
+      const result = await queryAsync("INSERT INTO payroll SET ?", payrollData);
+      await queryAsync(
+        "INSERT INTO audit_logs (action, employee_id, details, performed_at) VALUES (?, ?, ?, NOW())",
+        [employeeId, "NO_SALARY", `No salary calculated for ${month} due to zero working days`]
+      );
+
+      return res.status(201).json({
+        message: `Payroll generated successfully for ${employeeId} for ${month}`,
+        data: { id: result.insertId, ...payrollData },
+      });
+    }
+
     const [bankDetails] = await queryAsync(
       `SELECT bank_account_number, ifsc_number FROM bank_details WHERE employee_id = ?`,
       [employeeId]
@@ -382,10 +505,9 @@ const generatePayrollForEmployee = async (req, res) => {
       (parseFloat(employee.basic_salary) || 0) +
       (parseFloat(employee.allowances) || 0) +
       (parseFloat(employee.bonuses) || 0);
-    const dailyRate = gross_salary / totalWorkingDays;
-    const salaryAdjustment = unpaidLeaveDays * dailyRate;
-
-    const adjustedGrossSalary = gross_salary - salaryAdjustment;
+    const dailyRate = totalWorkingDays > 0 ? gross_salary / totalWorkingDays : 0;
+    const effectiveWorkingDays = presentDays + paidLeaveDays;
+    const adjustedGrossSalary = effectiveWorkingDays * dailyRate;
     const pf_deduction = Math.min(adjustedGrossSalary * 0.12, 1800);
     const esic_deduction = adjustedGrossSalary <= 21000 ? adjustedGrossSalary * 0.0075 : 0;
     const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
@@ -404,10 +526,10 @@ const generatePayrollForEmployee = async (req, res) => {
       esic_deduction,
       professional_tax,
       tax_deduction,
-      basic_salary: parseFloat(employee.basic_salary) || 0,
-      hra: (parseFloat(employee.allowances) || 0) * 0.4,
-      da: (parseFloat(employee.allowances) || 0) * 0.5,
-      other_allowances: (parseFloat(employee.allowances) || 0) * 0.1,
+      basic_salary: totalWorkingDays > 0 ? (parseFloat(employee.basic_salary) * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
+      hra: totalWorkingDays > 0 ? (parseFloat(employee.allowances) * 0.4 * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
+      da: totalWorkingDays > 0 ? (parseFloat(employee.allowances) * 0.5 * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
+      other_allowances: totalWorkingDays > 0 ? (parseFloat(employee.allowances) * 0.1 * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
       status: userRole === "super_admin" ? "Paid" : "Pending",
       payment_method: bankDetails ? "Bank Transfer" : "Cash",
       payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
@@ -422,6 +544,17 @@ const generatePayrollForEmployee = async (req, res) => {
     };
 
     const result = await queryAsync("INSERT INTO payroll SET ?", payrollData);
+
+    if (unpaidLeaveDays > 0) {
+      await queryAsync(
+        "INSERT INTO audit_logs (action, employee_id, details, performed_at) VALUES (?, ?, ?, NOW())",
+        [
+          "UNPAID_LEAVE_DEDUCTION",
+          employeeId,
+          `Deducted ${formatCurrency(unpaidLeaveDays * dailyRate)} for ${unpaidLeaveDays} unpaid leave days in ${month}`,
+        ]
+      );
+    }
 
     res.status(201).json({
       message: `Payroll generated successfully for ${employeeId} for ${month}`,
@@ -448,7 +581,7 @@ const downloadPayrollPDF = async (req, res) => {
     validateMonth(month);
     let query = `
       SELECT p.*, u.full_name AS employee_name, COALESCE(u.department_name, 'HR') AS department,
-             u.designation_name
+             u.designation_name, u.join_date
       FROM payroll p
       JOIN hrms_users u ON p.employee_id = u.employee_id
       WHERE p.month = ?
@@ -501,7 +634,6 @@ const downloadPayrollPDF = async (req, res) => {
         .text(`Page ${pageNumber}`, 500, 780, { align: "right" });
     });
 
-    // Watermark
     doc
       .font("Helvetica")
       .fontSize(60)
@@ -510,7 +642,6 @@ const downloadPayrollPDF = async (req, res) => {
       .text("CONFIDENTIAL", 100, 300, { align: "center", rotate: 45 })
       .opacity(1);
 
-    // Header with logo
     const logoPath = path.join(__dirname, "../public/images/company_logo.png");
     doc.rect(0, 0, 595, 80).fill("#F3F4F6").fillColor("#111827");
     if (fs.existsSync(logoPath)) {
@@ -543,7 +674,6 @@ const downloadPayrollPDF = async (req, res) => {
         { width: 400 }
       );
 
-    // Report Title
     doc
       .font("Helvetica-Bold")
       .fontSize(16)
@@ -663,7 +793,6 @@ const downloadPayrollPDF = async (req, res) => {
   }
 };
 
-
 module.exports = {
   getPayrolls,
   createPayroll,
@@ -671,5 +800,4 @@ module.exports = {
   generatePayrollForEmployee,
   downloadPayrollPDF,
   calculateLeaveAndAttendance,
-
 };

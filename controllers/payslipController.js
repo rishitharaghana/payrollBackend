@@ -3,7 +3,7 @@ const pool = require("../config/db");
 const util = require("util");
 const path = require("path");
 const fs = require("fs");
-const { permission } = require("process");
+const { calculateLeaveAndAttendance } = require("./payrollController"); // Import from payroll controller
 
 const queryAsync = util.promisify(pool.query).bind(pool);
 
@@ -37,74 +37,97 @@ const calculateTax = (gross) => {
   return gross * 0.3;
 };
 
-const generatePayrollForEmployee = async (
-  employeeId,
-  month,
-  userRole,
-  userId
-) => {
-  const [employee] = await queryAsync(
-    `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
-     FROM hrms_users
-     WHERE employee_id = ? AND status = 'active'`,
-    [employeeId]
-  );
-  if (!employee) throw new Error("Employee not found or inactive");
-  if (!employee.basic_salary) throw new Error("Employee has no salary data");
+const generatePayrollForEmployee = async (employeeId, month, userRole, userId) => {
+  try {
+    const [employee] = await queryAsync(
+      `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name
+       FROM hrms_users
+       WHERE employee_id = ? AND status = 'active'`,
+      [employeeId]
+    );
+    if (!employee) throw new Error("Employee not found or inactive");
+    if (!employee.basic_salary) throw new Error("Employee has no salary data");
 
-  const [existingPayroll] = await queryAsync(
-    `SELECT id FROM payroll WHERE employee_id = ? AND month = ?`,
-    [employeeId, month]
-  );
-  if (existingPayroll) return null;
+    const [existingPayroll] = await queryAsync(
+      `SELECT id FROM payroll WHERE employee_id = ? AND month = ?`,
+      [employeeId, month]
+    );
+    if (existingPayroll) return null;
 
-  const [bankDetails] = await queryAsync(
-    `SELECT bank_account_number, ifsc_number FROM bank_details WHERE employee_id = ?`,
-    [employeeId]
-  );
+    // Calculate leave and attendance data
+    const { unpaidLeaveDays, totalWorkingDays, presentDays } = await calculateLeaveAndAttendance(employeeId, month);
 
-  const gross_salary =
-    (parseFloat(employee.basic_salary) || 0) +
-    (parseFloat(employee.allowances) || 0) +
-    (parseFloat(employee.bonuses) || 0);
-  const pf_deduction = Math.min(gross_salary * 0.12, 1800);
-  const esic_deduction = gross_salary <= 21000 ? gross_salary * 0.0075 : 0;
-  const professional_tax = gross_salary <= 15000 ? 0 : 200;
-  const tax_deduction = calculateTax(gross_salary);
-  const net_salary =
-    gross_salary -
-    (pf_deduction + esic_deduction + professional_tax + tax_deduction);
+    if (!totalWorkingDays) {
+      throw new Error("Total working days cannot be zero for salary calculation");
+    }
 
-  const payrollData = {
-    employee_id: employeeId,
-    employee_name: employee.full_name,
-    department: employee.department_name || "HR",
-    designation_name: employee.designation_name || null,
-    gross_salary,
-    net_salary,
-    pf_deduction,
-    esic_deduction,
-    professional_tax,
-    tax_deduction,
-    basic_salary: parseFloat(employee.basic_salary) || 0,
-    hra: (parseFloat(employee.allowances) || 0) * 0.4,
-    da: (parseFloat(employee.allowances) || 0) * 0.5,
-    other_allowances: (parseFloat(employee.allowances) || 0) * 0.1,
-    status:
-      userRole === "employee"
-        ? "Approved"
-        : userRole === "super_admin"
-        ? "Paid"
-        : "Pending",
-    payment_method: bankDetails ? "Bank Transfer" : "Cash",
-    payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
-    month,
-    created_by: userId,
-    company_id: COMPANY_CONFIG.company_id,
-  };
+    const [bankDetails] = await queryAsync(
+      `SELECT bank_account_number, ifsc_number FROM bank_details WHERE employee_id = ?`,
+      [employeeId]
+    );
 
-  await queryAsync("INSERT INTO payroll SET ?", payrollData);
-  return payrollData;
+    // Calculate gross salary before deductions
+    const gross_salary =
+      (parseFloat(employee.basic_salary) || 0) +
+      (parseFloat(employee.allowances) || 0) +
+      (parseFloat(employee.bonuses) || 0);
+
+    // Calculate unpaid leave deduction
+    const dailyRate = gross_salary / totalWorkingDays;
+    const unpaid_leave_deduction = unpaidLeaveDays * dailyRate;
+    const adjusted_gross_salary = gross_salary - unpaid_leave_deduction;
+
+    // Calculate other deductions
+    const pf_deduction = Math.min(adjusted_gross_salary * 0.12, 1800);
+    const esic_deduction = adjusted_gross_salary <= 21000 ? adjusted_gross_salary * 0.0075 : 0;
+    const professional_tax = adjusted_gross_salary <= 15000 ? 0 : 200;
+    const tax_deduction = calculateTax(adjusted_gross_salary);
+    const net_salary =
+      adjusted_gross_salary -
+      (pf_deduction + esic_deduction + professional_tax + tax_deduction);
+
+    const payrollData = {
+      employee_id: employeeId,
+      employee_name: employee.full_name,
+      department: employee.department_name || "HR",
+      designation_name: employee.designation_name || null,
+      gross_salary: adjusted_gross_salary,
+      net_salary,
+      pf_deduction,
+      esic_deduction,
+      professional_tax,
+      tax_deduction,
+      unpaid_leave_deduction,
+      basic_salary: parseFloat(employee.basic_salary) || 0,
+      hra: (parseFloat(employee.allowances) || 0) * 0.4,
+      da: (parseFloat(employee.allowances) || 0) * 0.5,
+      other_allowances: (parseFloat(employee.allowances) || 0) * 0.1,
+      status: userRole === "employee" ? "Approved" : userRole === "super_admin" ? "Paid" : "Pending",
+      payment_method: bankDetails ? "Bank Transfer" : "Cash",
+      payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
+      month,
+      created_by: userId,
+      company_id: COMPANY_CONFIG.company_id,
+      unpaid_leave_days: unpaidLeaveDays,
+      total_working_days: totalWorkingDays,
+      present_days: presentDays,
+    };
+
+    await queryAsync("INSERT INTO payroll SET ?", payrollData);
+    
+    // Log unpaid leave deduction
+    if (unpaid_leave_deduction > 0) {
+      await queryAsync(
+        "INSERT INTO payroll_audit (employee_id, month, action, details, created_at) VALUES (?, ?, ?, ?, NOW())",
+        [employeeId, month, "unpaid_leave_deduction", `Deducted ${unpaid_leave_deduction} for ${unpaidLeaveDays} unpaid leave days`]
+      );
+    }
+
+    return payrollData;
+  } catch (err) {
+    console.error("Error in generatePayrollForEmployee:", err.message, err.sqlMessage);
+    throw err;
+  }
 };
 
 const numberToWords = (num) => {
@@ -216,6 +239,8 @@ const drawTable = (doc, title, data, startX, startY) => {
       .stroke();
     y += rowHeight;
   });
+
+  return y;
 };
 
 const generatePayslip = async (req, res) => {
@@ -238,9 +263,9 @@ const generatePayslip = async (req, res) => {
     let payroll = await queryAsync(
       `SELECT 
         p.employee_id, p.month, p.gross_salary, p.net_salary, p.pf_deduction, 
-        p.esic_deduction, p.tax_deduction, p.professional_tax, p.basic_salary, 
-        p.hra, p.da, p.other_allowances, p.payment_method, p.payment_date, 
-        p.status, p.created_by, p.paid_leave_days, p.unpaid_leave_days, p.present_days, p.holidays, p.total_working_days,
+        p.esic_deduction, p.tax_deduction, p.professional_tax, p.unpaid_leave_deduction,
+        p.basic_salary, p.hra, p.da, p.other_allowances, p.payment_method, p.payment_date, 
+        p.status, p.created_by, p.unpaid_leave_days, p.total_working_days,
         u.full_name AS employee_name, COALESCE(u.department_name, 'HR') AS department, 
         u.designation_name, pd.pan_number, pd.uan_number, u.dob,
         b.bank_account_number, b.ifsc_number
@@ -253,12 +278,7 @@ const generatePayslip = async (req, res) => {
     );
 
     if (!payroll.length) {
-      const newPayroll = await generatePayrollForEmployee(
-        employeeId,
-        month,
-        role,
-        employee_id
-      );
+      const newPayroll = await generatePayrollForEmployee(employeeId, month, role, employee_id);
       if (!newPayroll) {
         return res.status(400).json({
           error: `Payroll already exists for ${employeeId} in ${month}`,
@@ -282,14 +302,14 @@ const generatePayslip = async (req, res) => {
 
     const employee = payroll[0];
 
-    let userPassword = "default123"; 
+    let userPassword = "default123";
     if (employee.dob) {
       const dobDate = new Date(employee.dob);
       if (!isNaN(dobDate)) {
         const day = String(dobDate.getDate()).padStart(2, "0");
-        const month = String(dobDate.getMonth() + 1).padStart(2, "0"); 
+        const month = String(dobDate.getMonth() + 1).padStart(2, "0");
         const year = dobDate.getFullYear();
-        userPassword = `${day}-${month}-${year}`; // e.g., 25-12-1990
+        userPassword = `${day}-${month}-${year}`;
       } else {
         console.warn(`Invalid DOB for employee ${employeeId}: ${employee.dob}`);
       }
@@ -297,7 +317,6 @@ const generatePayslip = async (req, res) => {
       console.warn(`DOB missing for employee ${employeeId}. Using default password.`);
     }
 
-    // Initialize PDF with DOB-based password
     const doc = new PDFDocument({
       margin: 40,
       size: "A4",
@@ -316,7 +335,6 @@ const generatePayslip = async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
     doc.pipe(res);
 
-    // ... (rest of the PDF generation code remains unchanged)
     const logoPath = path.join(__dirname, "../public/images/company_logo.png");
     if (fs.existsSync(logoPath)) {
       doc.image(logoPath, 40, 30, { width: 80, height: 40 });
@@ -357,6 +375,7 @@ const generatePayslip = async (req, res) => {
       ["Department", employee.department || "HR"],
       ["Designation", employee.designation_name || "-"],
       ["Pay Period", employee.month || "-"],
+      ["Total Working Days", employee.total_working_days || "0"],
     ];
     const rightDetails = [
       ["PAN", employee.pan_number || "-"],
@@ -369,6 +388,7 @@ const generatePayslip = async (req, res) => {
           ? new Date(employee.payment_date).toLocaleDateString("en-IN")
           : "-",
       ],
+      ["Unpaid Leave Days", employee.unpaid_leave_days || "0"],
     ];
 
     let y = doc.y;
@@ -384,7 +404,7 @@ const generatePayslip = async (req, res) => {
         .font("Times-Bold")
         .fontSize(9)
         .fillColor("#000")
-        .text(":", 120, y, { width: 10, align: "center" });
+        .text(":", 125, y, { width: 10, align: "center" });
 
       doc
         .font("Times-Roman")
@@ -408,7 +428,7 @@ const generatePayslip = async (req, res) => {
         .font("Times-Bold")
         .fontSize(9)
         .fillColor("#000")
-        .text(":", 410, y, { width: 10, align: "center" });
+        .text(":", 420, y, { width: 10, align: "center" });
 
       doc
         .font("Times-Roman")
@@ -433,34 +453,26 @@ const generatePayslip = async (req, res) => {
       ["ESIC", formatCurrency(employee.esic_deduction)],
       ["Professional Tax", formatCurrency(employee.professional_tax)],
       ["Income Tax", formatCurrency(employee.tax_deduction)],
+      ["Unpaid Leave Deduction", formatCurrency(employee.unpaid_leave_deduction)],
       [
         "Total Deductions",
         formatCurrency(
           (employee.pf_deduction || 0) +
             (employee.esic_deduction || 0) +
             (employee.professional_tax || 0) +
-            (employee.tax_deduction || 0)
+            (employee.tax_deduction || 0) +
+            (employee.unpaid_leave_deduction || 0)
         ),
       ],
       ["Net Pay", formatCurrency(employee.net_salary)],
     ];
-    const attendanceSummary = [
-      ["Total Working Days", employee.total_working_days || 0],
-      ["Days Present", employee.present_days || 0],
-      ["Paid Leave Days", employee.paid_leave_days || 0],
-      ["Unpaid Leave Days", employee.unpaid_leave_days || 0],
-      ["Holidays", employee.holidays || 0],
-    ];
 
     let tableY = startY;
-    drawTable(doc, "Earnings", earnings, 50, tableY);
-    tableY += earnings.length * 20 + 30;
+    tableY = drawTable(doc, "Earnings", earnings, 50, tableY);
+    tableY += 30;
 
-    drawTable(doc, "Deductions", deductions, 50, tableY);
-    tableY += deductions.length * 20 + 30;
-
-    drawTable(doc, "Attendance Summary", attendanceSummary, 50, tableY);
-    tableY += attendanceSummary.length * 20 + 40;
+    tableY = drawTable(doc, "Deductions", deductions, 50, tableY);
+    tableY += 40;
 
     doc
       .font("Times-Bold")
@@ -476,9 +488,7 @@ const generatePayslip = async (req, res) => {
       .fontSize(10)
       .fillColor("#444")
       .text(
-        numberToWords(employee.net_salary).replace(/^\w/, (c) =>
-          c.toUpperCase()
-        ),
+        numberToWords(employee.net_salary).replace(/^\w/, (c) => c.toUpperCase()),
         0,
         doc.y,
         { align: "center" }
@@ -532,8 +542,8 @@ const getPayslips = async (req, res) => {
       SELECT p.employee_id, p.month, u.full_name as employee, COALESCE(u.department_name, 'HR') as department, 
              u.designation_name, p.net_salary as salary, p.status,
              p.basic_salary, p.hra, p.da, p.other_allowances, p.pf_deduction, 
-             p.esic_deduction, p.tax_deduction, p.professional_tax, p.payment_date,
-             p.leave_days, p.present_days, p.holidays, p.total_working_days
+             p.esic_deduction, p.tax_deduction, p.professional_tax, p.unpaid_leave_deduction,
+             p.payment_date, p.unpaid_leave_days, p.total_working_days
       FROM payroll p
       JOIN hrms_users u ON p.employee_id = u.employee_id
     `;
@@ -556,8 +566,7 @@ const getPayslips = async (req, res) => {
 
     if (month) {
       query += role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
-      countQuery +=
-        role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
+      countQuery += role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
       params.push(month);
       countParams.push(month);
     }

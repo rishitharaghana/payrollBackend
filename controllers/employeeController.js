@@ -78,13 +78,11 @@ const createEmployee = async (req, res) => {
       return res.status(400).json({ error: "Photo is required" });
     }
 
-    // ✅ Role validation using ENUM values
     const validRoles = ["super_admin", "hr", "dept_head", "manager", "employee"];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ error: "Invalid role specified" });
     }
 
-    // ✅ Permission checks
     if (!["super_admin", "hr"].includes(userRole)) {
       return res.status(403).json({ error: "Access denied: Insufficient permissions" });
     }
@@ -163,7 +161,6 @@ const createEmployee = async (req, res) => {
 const baseUrl = process.env.UPLOADS_BASE_URL || `${req.protocol}://${req.get("host")}/uploads/`;
 const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
 
-      // Verify file exists
       if (photo && !fs.existsSync(photo.path)) {
         return res.status(500).json({ error: "Failed to save uploaded photo" });
       }
@@ -201,18 +198,16 @@ const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
 
       const result = await queryAsync(query, values);
 
-      // Allocate leaves
       if (["employee", "hr", "dept_head", "manager"].includes(role)) {
         try {
           const { allocateMonthlyLeaves } = require("./leaveController");
-          await allocateMonthlyLeaves({ user: req.user }); // Pass actual user context
+          await allocateMonthlyLeaves({ user: req.user });
           console.log(`Initial leave allocation completed for employee ${employeeId}`);
         } catch (err) {
           console.error(`Failed to allocate initial leave for employee ${employeeId}:`, err.message);
         }
       }
 
-      // Fetch inserted record
       const [insertedRecord] = await queryAsync(
         `SELECT dob, join_date FROM hrms_users WHERE employee_id = ?`,
         [employeeId]
@@ -276,7 +271,6 @@ const updateEmployee = async (req, res) => {
     } = req.body;
     const photo = req.files?.["photo"]?.[0];
 
-    // Validate role exists
     const [roleExists] = await queryAsync(
       "SELECT role_id, isHRRole FROM roles WHERE role_id = ?",
       [role]
@@ -285,7 +279,6 @@ const updateEmployee = async (req, res) => {
       return res.status(400).json({ error: "Invalid role specified" });
     }
 
-    // Permission checks
     const [currentUserRole] = await queryAsync(
       "SELECT isHRRole FROM roles WHERE role_id = ?",
       [userRole]
@@ -302,7 +295,6 @@ const updateEmployee = async (req, res) => {
       return res.status(403).json({ error: "HR cannot update HR-level roles" });
     }
 
-    // Input validations
     if (!name?.trim() || !email?.trim() || !mobile?.trim() || !role) {
       return res.status(400).json({
         error: "Name, email, mobile, and role are required for update",
@@ -336,7 +328,6 @@ const updateEmployee = async (req, res) => {
         return res.status(404).json({ error: "Employee record not found" });
       }
 
-      // Check if role is being changed
       if (existingRecord.role !== role) {
         if (!["super_admin"].includes(userRole)) {
           return res.status(403).json({ error: "Only super admins can change roles" });
@@ -346,7 +337,6 @@ const updateEmployee = async (req, res) => {
         }
       }
 
-      // Check for email and mobile conflicts
       const [emailCheck] = await queryAsync(
         `SELECT * FROM hrms_users WHERE email = ? AND id != ?`,
         [email, id]
@@ -362,7 +352,6 @@ const updateEmployee = async (req, res) => {
         return res.status(400).json({ error: "Mobile number already in use" });
       }
 
-      // Handle photo upload
       const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
       let photo_url = existingRecord.photo_url;
       if (photo) {
@@ -374,7 +363,6 @@ const updateEmployee = async (req, res) => {
         photo_url = null;
       }
 
-      // Update employee
       const query = `UPDATE hrms_users SET 
         full_name = ?, email = ?, mobile = ?, emergency_phone = ?, address = ?, 
         blood_group = ?, gender = ?, photo_url = ?, role = ? 
@@ -695,7 +683,6 @@ const createDocuments = async (req, res) => {
     let { employeeId, documentType } = req.body;
     const document = req.files?.["document"]?.[0];
 
-    // Permission check
     if (!["super_admin", "hr", "employee"].includes(userRole)) {
       return res
         .status(403)
@@ -705,7 +692,6 @@ const createDocuments = async (req, res) => {
       employeeId = userId;
     }
 
-    // Validation
     if (!employeeId || !documentType || !document) {
       return res
         .status(400)
@@ -735,7 +721,6 @@ const createDocuments = async (req, res) => {
         return res.status(404).json({ error: `${userRole} not found` });
       }
 
-      // Save file to uploads
       const baseUrl = "http://localhost:3007/uploads/";
       const fileExtension = path.extname(document.originalname).toLowerCase();
       const timestamp = Date.now();
@@ -940,7 +925,6 @@ const deleteEmployee = async (req, res) => {
       return res.status(400).json({ error: 'Only active employees can be terminated' });
     }
 
-    // Check dependencies
     const relatedTables = [
       { table: 'payroll', column: 'employee_id' },
       { table: 'personal_details', column: 'employee_id' },
@@ -961,7 +945,6 @@ const deleteEmployee = async (req, res) => {
       }
     }
 
-    // Update status based on exit type
     const status = exitType === 'resignation' ? 'serving_notice' : exitType === 'absconding' ? 'absconded' : 'inactive';
     await queryAsync(
       `UPDATE hrms_users SET 
@@ -986,13 +969,11 @@ const deleteEmployee = async (req, res) => {
       ]
     );
 
-    // Log action
     await queryAsync(
       `INSERT INTO audit_logs (action, employee_id, performed_by, details, performed_at) VALUES (?, ?, ?, ?, ?)`,
       [`TERMINATE_EMPLOYEE_${exitType.toUpperCase()}`, existingRecord.employee_id, req.user.employee_id, reason || 'No reason provided', new Date()]
     );
 
-    // Update leave restrictions
     if (restrictLeaves && exitType === 'resignation') {
       await queryAsync(
         `UPDATE leave_balances SET leave_application_allowed = false WHERE employee_id = ?`,
@@ -1002,7 +983,6 @@ const deleteEmployee = async (req, res) => {
 
     await queryAsync('COMMIT');
 
-    // Notify stakeholders
     const { sendNotification } = require('./notificationService');
     await sendNotification({
       to: 'it@company.com,finance@company.com',

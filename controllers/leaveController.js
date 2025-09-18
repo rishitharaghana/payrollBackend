@@ -358,7 +358,7 @@ const getRecipientOptions = async (req, res) => {
     }
 
     const formattedRecipients = recipients.map((recipient) => ({
-      value: recipient.identifier, // employee_id for hr, full_name for super_admin
+      value: recipient.identifier, // employee_id for HR, full_name for Super Admin
       label: `${recipient.full_name} (${recipient.role === "super_admin" ? "Super Admin" : "HR"})`,
       role: recipient.role,
     }));

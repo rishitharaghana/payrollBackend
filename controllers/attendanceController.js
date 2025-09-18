@@ -9,14 +9,15 @@ const markAttendance = async (req, res) => {
 
   console.log("markAttendance called with body:", req.body, "user:", { role, id });
 
-  if (!employee_id || !date || !login_time || !location) {
+  if (!employee_id || !date || !login_time || !location || !recipient_id) {
     console.log("Validation failed. Missing fields:", {
       employee_id,
       date,
       login_time,
       location,
+      recipient_id,
     });
-    return res.status(400).json({ error: "Date, login time, and location are required" });
+    return res.status(400).json({ error: "Date, login time, location, and recipient are required" });
   }
 
   if (!["Office", "Remote"].includes(location)) {
@@ -35,6 +36,7 @@ const markAttendance = async (req, res) => {
   }
 
   try {
+    // Verify the authenticated user
     const [user] = await queryAsync(
       `SELECT employee_id FROM hrms_users WHERE id = ? AND role = ?`,
       [id, role]
@@ -43,29 +45,28 @@ const markAttendance = async (req, res) => {
       return res.status(403).json({ error: "Unauthorized to mark attendance for this employee" });
     }
 
-    // For HR, force recipient to be 'super_admin'
-    let finalRecipientId = recipient_id;
+    // Validate recipient_id
+    let recipient;
     if (role === "hr") {
-      const [superAdmin] = await queryAsync(
-        `SELECT employee_id FROM hrms_users WHERE role = 'super_admin' AND status = 'active' LIMIT 1`
+      // HR submits to Super Admin (recipient_id is full_name)
+      [recipient] = await queryAsync(
+        `SELECT full_name, role FROM hrms_users WHERE full_name = ? AND role = 'super_admin' AND status = 'active'`,
+        [recipient_id]
       );
-      if (!superAdmin) {
-        return res.status(400).json({ error: "No active Super Admin found" });
-      }
-      finalRecipientId = superAdmin.employee_id;
-    } else if (role !== "super_admin") {
-      // Validate recipient_id for non-HR roles
-      const [recipient] = await queryAsync(
-        `SELECT employee_id, full_name, role FROM hrms_users WHERE (employee_id = ? AND role = 'hr' AND status = 'active') OR (full_name = ? AND role = 'super_admin' AND status = 'active')`,
-        [recipient_id, recipient_id]
+    } else {
+      // Employees and dept_head submit to HR (recipient_id is employee_id)
+      [recipient] = await queryAsync(
+        `SELECT employee_id, role, full_name FROM hrms_users WHERE employee_id = ? AND role = 'hr' AND status = 'active'`,
+        [recipient_id]
       );
-      if (!recipient) {
-        console.log("Recipient validation failed for recipient_id:", recipient_id);
-        return res.status(400).json({ error: "Invalid recipient. Must be an active HR or Super Admin" });
-      }
-      finalRecipientId = recipient.employee_id;
+    }
+    if (!recipient) {
+      return res.status(400).json({
+        error: `Invalid recipient. Must be an active ${role === "hr" ? "Super Admin" : "HR"} user`,
+      });
     }
 
+    // Check for existing attendance
     const [existingAttendance] = await queryAsync(
       "SELECT * FROM attendance WHERE employee_id = ? AND date = ?",
       [employee_id, date]
@@ -74,6 +75,7 @@ const markAttendance = async (req, res) => {
       return res.status(400).json({ error: "Attendance already marked for this date" });
     }
 
+    // Set status based on role
     const status = ["hr", "super_admin"].includes(role) ? "Approved" : "Pending";
 
     const query = `
@@ -86,7 +88,7 @@ const markAttendance = async (req, res) => {
       login_time,
       logout_time || null,
       status,
-      finalRecipientId,
+      recipient_id, // Store employee_id for HR or full_name for Super Admin
       location,
     ];
 
@@ -100,7 +102,8 @@ const markAttendance = async (req, res) => {
         date,
         login_time,
         logout_time,
-        recipient_id: finalRecipientId,
+        recipient_id,
+        recipient_name: `${recipient.full_name} (${recipient.role === "super_admin" ? "Super Admin" : "HR"})`,
         location,
         status,
       },
@@ -124,11 +127,15 @@ const fetchEmployeeAttendance = async (req, res) => {
     }
 
     const attendance = await queryAsync(
-      `SELECT id, employee_id, date, login_time, logout_time, recipient AS recipient_id, location, status, 
-              DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at
-       FROM attendance 
-       WHERE employee_id = ? 
-       ORDER BY date DESC 
+      `SELECT a.id, a.employee_id, DATE_FORMAT(a.date, '%Y-%m-%d') AS date, 
+              a.login_time, a.logout_time, a.recipient AS recipient_id, 
+              a.location, a.status, DATE_FORMAT(a.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+              COALESCE(u_rec.full_name, 'Unknown') AS recipient_name,
+              COALESCE(u_rec.role, 'unknown') AS recipient_role
+       FROM attendance a
+       LEFT JOIN hrms_users u_rec ON a.recipient = u_rec.employee_id OR a.recipient = u_rec.full_name
+       WHERE a.employee_id = ? 
+       ORDER BY a.date DESC 
        LIMIT 10`,
       [user.employee_id]
     );
@@ -145,7 +152,10 @@ const fetchEmployeeAttendance = async (req, res) => {
           login_time: record.login_time || 'N/A',
           logout_time: record.logout_time || 'N/A',
           status: record.status,
-          recipient_id: record.recipient_id, // Changed to recipient_id
+          recipient_id: record.recipient_id,
+          recipient_name: record.recipient_name !== 'Unknown' 
+            ? `${record.recipient_name} (${record.recipient_role === 'super_admin' ? 'Super Admin' : 'HR'})`
+            : 'Unknown',
           location: record.location,
           created_at: record.created_at,
           employee_name: user.full_name,
@@ -181,23 +191,31 @@ const fetchAllAttendance = async (req, res) => {
 
     if (role === 'dept_head') {
       const [deptHead] = await queryAsync(
-        'SELECT department_name FROM hrms_users WHERE id = ? AND role = ?',
+        'SELECT department_name, employee_id FROM hrms_users WHERE id = ? AND role = ?',
         [id, 'dept_head']
       );
       if (!deptHead) {
         return res.status(403).json({ error: 'Access denied: Not a department head' });
       }
-      query += ' WHERE u.department_name = ? AND a.recipient = ? ORDER BY a.date DESC';
-      params = [deptHead.department_name, 'hr'];
+      query += ' WHERE u.department_name = ? AND (a.recipient = ? OR a.recipient = ?)';
+      params = [deptHead.department_name, 'hr', deptHead.employee_id];
     } else if (role === 'super_admin') {
-      // Super Admin sees their own records and HR-approved records
-      query += ' WHERE (a.recipient = ? OR (a.recipient = ? AND a.status = ?)) ORDER BY a.date DESC';
-      params = ['super_admin', 'hr', 'Approved'];
+      const [user] = await queryAsync(
+        'SELECT employee_id, hr_employee_id FROM hrms_users WHERE id = ? AND role = ?',
+        [id, 'super_admin']
+      );
+      query += ' WHERE a.recipient IN (?, ?, ?) OR a.status IN (?, ?)';
+      params = ['super_admin', 'hr', user.hr_employee_id || '', 'Approved', 'Rejected'];
     } else {
-      query += ' WHERE a.recipient = ? ORDER BY a.date DESC';
-      params = [role];
+      const [user] = await queryAsync(
+        'SELECT employee_id FROM hrms_users WHERE id = ? AND role = ?',
+        [id, 'hr']
+      );
+      query += ' WHERE a.recipient = ? OR a.recipient = ?';
+      params = ['hr', user.employee_id];
     }
 
+    query += ' ORDER BY a.date DESC';
     const attendance = await queryAsync(query, params);
 
     res.json({

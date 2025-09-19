@@ -66,16 +66,16 @@ const applyLeave = async (req, res) => {
     }
 
     // Prevent multiple leaves on the same day
-   const existingLeaves = await queryAsync(
-  `SELECT * FROM leaves
-   WHERE employee_id = ?
-   AND (
-         (DATE(start_date) <= DATE(?) AND DATE(end_date) >= DATE(?))
-         OR
-         (DATE(start_date) <= DATE(?) AND DATE(end_date) >= DATE(?))
-       )`,
-  [employee_id, start_date, start_date, end_date, end_date]
-);
+    const existingLeaves = await queryAsync(
+      `SELECT * FROM leaves
+       WHERE employee_id = ?
+       AND (
+             (DATE(start_date) <= DATE(?) AND DATE(end_date) >= DATE(?))
+             OR
+             (DATE(start_date) <= DATE(?) AND DATE(end_date) >= DATE(?))
+           )`,
+      [employee_id, start_date, start_date, end_date, end_date]
+    );
 
     if (existingLeaves.length > 0) {
       return res.status(400).json({ error: "You already have a leave applied for the selected dates" });
@@ -109,13 +109,16 @@ const applyLeave = async (req, res) => {
 
     const currentTime = new Date().toISOString().slice(0, 19).replace("T", " ");
 
+    // ✅ FIX: leave_type should depend on leave_status
+    const leave_type = leave_status.toLowerCase(); // "paid" or "unpaid"
+
     // Insert leave
     const results = await queryAsync(
       `INSERT INTO leaves (employee_id, start_date, end_date, reason, leave_type, leave_status, total_days, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)`,
-      [employee_id, start_date, end_date, reason, 'paid', leave_status, total_days, currentTime, currentTime]
+      [employee_id, start_date, end_date, reason, leave_type, leave_status, total_days, currentTime, currentTime]
     );
-    const result = results; // queryAsync returns result object directly
+    const result = results;
 
     // Insert recipient mapping
     await queryAsync(
@@ -123,7 +126,7 @@ const applyLeave = async (req, res) => {
       [result.insertId, recipient_id]
     );
 
-    // Deduct paid leave balance
+    // Deduct paid leave balance only if leave is Paid
     if (leave_status === "Paid") {
       await queryAsync(
         "UPDATE leave_balances SET balance = balance - ? WHERE employee_id = ? AND leave_type = ? AND year = ?",
@@ -137,7 +140,6 @@ const applyLeave = async (req, res) => {
     res.status(500).json({ error: "Database error", details: err.sqlMessage });
   }
 };
-
 
 const updateLeaveStatus = async (req, res) => {
   const { leave_id, status } = req.body;

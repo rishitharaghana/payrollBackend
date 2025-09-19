@@ -28,7 +28,7 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
   const today = new Date("2025-09-17T14:37:00+05:30"); // Current date: 2025-09-17 02:37 PM IST
   const calculationEndDate = today < endDate ? today : endDate;
   const startDateStr = startDate.toISOString().split("T")[0];
-  const endDateStr = calculationEndDate.toISOString().split("T")[0];
+  const endDateStr = endDate.toISOString().split("T")[0]; // Use endDate for full month calculation
 
   try {
     const [employee] = await queryAsync(
@@ -57,18 +57,6 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
     }
     const effectiveStartDate = joinDate && joinDate > startDate ? joinDate : startDate;
 
-    if (effectiveStartDate > calculationEndDate) {
-      console.log(`Employee ${employeeId} not eligible for ${month} (join_date: ${joinDate})`);
-      return {
-        paidLeaveDays: 0,
-        unpaidLeaveDays: 0,
-        leaveDetails: [],
-        presentDays: 0,
-        holidays: 0,
-        totalWorkingDays: 0,
-      };
-    }
-
     const holidays = await queryAsync(
       "SELECT date FROM holidays WHERE date BETWEEN ? AND ?",
       [startDateStr, endDateStr]
@@ -88,7 +76,7 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
     let leaveDetails = [];
     for (const leave of leaves) {
       const start = new Date(Math.max(new Date(leave.start_date), effectiveStartDate));
-      const end = new Date(Math.min(new Date(leave.end_date), calculationEndDate));
+      const end = new Date(Math.min(new Date(leave.end_date), endDate));
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         const dateStr = d.toISOString().split("T")[0];
         const isHoliday = holidayDates.includes(dateStr);
@@ -114,12 +102,12 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
       `SELECT date FROM attendance 
        WHERE employee_id = ? AND status IN ('Present', 'Approved') 
        AND date BETWEEN ? AND ?`,
-      [employeeId, startDateStr, endDateStr]
+      [employeeId, effectiveStartDate.toISOString().split("T")[0], endDateStr]
     );
     const presentDays = attendance.length;
 
     let totalWorkingDays = 0;
-    for (let d = new Date(effectiveStartDate); d <= calculationEndDate; d.setDate(d.getDate() + 1)) {
+    for (let d = new Date(effectiveStartDate); d <= endDate; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split("T")[0];
       const isHoliday = holidayDates.includes(dateStr);
       const isWeekend = d.getDay() === 0 || d.getDay() === 6;
@@ -131,7 +119,7 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
       role: employee.role,
       status: employee.status,
       effectiveStartDate,
-      calculationEndDate,
+      endDate,
       totalWorkingDays,
       presentDays,
       paidLeaveDays,
@@ -303,6 +291,7 @@ const generatePayroll = async (req, res) => {
   const { month } = req.body;
   try {
     validateMonth(month);
+    console.log("Fetching employees...");
     const employees = await queryAsync(
       `SELECT employee_id, full_name, department_name, basic_salary, allowances, bonuses, designation_name, join_date
        FROM hrms_users
@@ -312,6 +301,7 @@ const generatePayroll = async (req, res) => {
       return res.status(404).json({ error: "No active employees found" });
     }
 
+    console.log("Deleting existing payroll records...");
     await queryAsync("DELETE FROM payroll WHERE month = ?", [month]);
     const payrolls = [];
     for (const emp of employees) {
@@ -324,6 +314,7 @@ const generatePayroll = async (req, res) => {
         continue;
       }
 
+      console.log(`Calculating leave and attendance for ${emp.employee_id}...`);
       const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays } = await calculateLeaveAndAttendance(emp.employee_id, month);
 
       const gross_salary =
@@ -374,20 +365,68 @@ const generatePayroll = async (req, res) => {
         holidays: holidays,
         total_working_days: totalWorkingDays,
       };
-      await queryAsync("INSERT INTO payroll SET ?", payrollData);
 
-      if (unpaidLeaveDays > 0 || totalWorkingDays === 0) {
+      console.log(`Inserting payroll for employee ${emp.employee_id}:`, payrollData);
+      try {
         await queryAsync(
-          "INSERT INTO audit_logs (action, employee_id, details, performed_at) VALUES (?, ?, ?, NOW())",
+          `INSERT INTO payroll (
+            employee_id, employee_name, department, designation_name, gross_salary, pf_deduction, esic_deduction,
+            professional_tax, tax_deduction, basic_salary, hra, da, other_allowances, net_salary, status,
+            payment_method, payment_date, month, created_by, company_id, paid_leave_days, unpaid_leave_days,
+            present_days, holidays, total_working_days
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            totalWorkingDays === 0 ? "NO_SALARY" : "UNPAID_LEAVE_DEDUCTION",
-            emp.employee_id,
-            totalWorkingDays === 0
-              ? `No salary calculated for ${month} due to zero working days`
-              : `Deducted ${formatCurrency(salaryAdjustment)} for ${unpaidLeaveDays} unpaid leave days in ${month}`,
+            payrollData.employee_id,
+            payrollData.employee_name,
+            payrollData.department,
+            payrollData.designation_name,
+            payrollData.gross_salary,
+            payrollData.pf_deduction,
+            payrollData.esic_deduction,
+            payrollData.professional_tax,
+            payrollData.tax_deduction,
+            payrollData.basic_salary,
+            payrollData.hra,
+            payrollData.da,
+            payrollData.other_allowances,
+            payrollData.net_salary,
+            payrollData.status,
+            payrollData.payment_method,
+            payrollData.payment_date,
+            payrollData.month,
+            payrollData.created_by,
+            payrollData.company_id,
+            payrollData.paid_leave_days,
+            payrollData.unpaid_leave_days,
+            payrollData.present_days,
+            payrollData.holidays,
+            payrollData.total_working_days,
           ]
         );
+      } catch (insertErr) {
+        console.error(`Failed to insert payroll for ${emp.employee_id}:`, insertErr.message, insertErr.sqlMessage);
+        throw insertErr;
       }
+
+      if (unpaidLeaveDays > 0 || totalWorkingDays === 0) {
+  console.log(`Inserting audit log for ${emp.employee_id}...`);
+  try {
+    await queryAsync(
+      "INSERT INTO audit_log (action, employee_id, description, performed_by, created_at) VALUES (?, ?, ?, ?, NOW())",
+      [
+        totalWorkingDays === 0 ? "NO_SALARY" : "UNPAID_LEAVE_DEDUCTION",
+        emp.employee_id,
+        totalWorkingDays === 0
+          ? `No salary calculated for ${month} due to zero working days`
+          : `Deducted ${formatCurrency(salaryAdjustment)} for ${unpaidLeaveDays} unpaid leave days in ${month}`,
+        req.user?.employee_id || "SYSTEM",
+      ]
+    );
+  } catch (auditErr) {
+    console.error(`Failed to insert audit log for ${emp.employee_id}:`, auditErr.message, auditErr.sqlMessage);
+    throw auditErr;
+  }
+}
 
       payrolls.push(payrollData);
     }
@@ -484,12 +523,51 @@ const generatePayrollForEmployee = async (req, res) => {
         total_working_days: totalWorkingDays,
       };
 
-      const result = await queryAsync("INSERT INTO payroll SET ?", payrollData);
-      await queryAsync(
-        "INSERT INTO audit_logs (action, employee_id, details, performed_at) VALUES (?, ?, ?, NOW())",
-        [employeeId, "NO_SALARY", `No salary calculated for ${month} due to zero working days`]
+      console.log(`Inserting payroll for employee ${employeeId}:`, payrollData);
+      const result = await queryAsync(
+        `INSERT INTO payroll (
+          employee_id, employee_name, department, designation_name, gross_salary, pf_deduction, esic_deduction,
+          professional_tax, tax_deduction, basic_salary, hra, da, other_allowances, net_salary, status,
+          payment_method, payment_date, month, created_by, company_id, paid_leave_days, unpaid_leave_days,
+          present_days, holidays, total_working_days
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          payrollData.employee_id,
+          payrollData.employee_name,
+          payrollData.department,
+          payrollData.designation_name,
+          payrollData.gross_salary,
+          payrollData.pf_deduction,
+          payrollData.esic_deduction,
+          payrollData.professional_tax,
+          payrollData.tax_deduction,
+          payrollData.basic_salary,
+          payrollData.hra,
+          payrollData.da,
+          payrollData.other_allowances,
+          payrollData.net_salary,
+          payrollData.status,
+          payrollData.payment_method,
+          payrollData.payment_date,
+          payrollData.month,
+          payrollData.created_by,
+          payrollData.company_id,
+          payrollData.paid_leave_days,
+          payrollData.unpaid_leave_days,
+          payrollData.present_days,
+          payrollData.holidays,
+          payrollData.total_working_days,
+        ]
       );
-
+    await queryAsync(
+  "INSERT INTO audit_log (action, employee_id, description, performed_by, created_at) VALUES (?, ?, ?, ?, NOW())",
+  [
+    "NO_SALARY",
+    employeeId,
+    `No salary calculated for ${month} due to zero working days`,
+    userId || "SYSTEM",
+  ]
+);
       return res.status(201).json({
         message: `Payroll generated successfully for ${employeeId} for ${month}`,
         data: { id: result.insertId, ...payrollData },
@@ -543,11 +621,46 @@ const generatePayrollForEmployee = async (req, res) => {
       total_working_days: totalWorkingDays,
     };
 
-    const result = await queryAsync("INSERT INTO payroll SET ?", payrollData);
+    console.log(`Inserting payroll for employee ${employeeId}:`, payrollData);
+    const result = await queryAsync(
+      `INSERT INTO payroll (
+        employee_id, employee_name, department, designation_name, gross_salary, pf_deduction, esic_deduction,
+        professional_tax, tax_deduction, basic_salary, hra, da, other_allowances, net_salary, status,
+        payment_method, payment_date, month, created_by, company_id, paid_leave_days, unpaid_leave_days,
+        present_days, holidays, total_working_days
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        payrollData.employee_id,
+        payrollData.employee_name,
+        payrollData.department,
+        payrollData.designation_name,
+        payrollData.gross_salary,
+        payrollData.pf_deduction,
+        payrollData.esic_deduction,
+        payrollData.professional_tax,
+        payrollData.tax_deduction,
+        payrollData.basic_salary,
+        payrollData.hra,
+        payrollData.da,
+        payrollData.other_allowances,
+        payrollData.net_salary,
+        payrollData.status,
+        payrollData.payment_method,
+        payrollData.payment_date,
+        payrollData.month,
+        payrollData.created_by,
+        payrollData.company_id,
+        payrollData.paid_leave_days,
+        payrollData.unpaid_leave_days,
+        payrollData.present_days,
+        payrollData.holidays,
+        payrollData.total_working_days,
+      ]
+    );
 
     if (unpaidLeaveDays > 0) {
       await queryAsync(
-        "INSERT INTO audit_logs (action, employee_id, details, performed_at) VALUES (?, ?, ?, NOW())",
+        "INSERT INTO audit_log (action, employee_id, details, performed_at) VALUES (?, ?, ?, NOW())",
         [
           "UNPAID_LEAVE_DEDUCTION",
           employeeId,

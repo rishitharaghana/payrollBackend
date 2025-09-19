@@ -181,7 +181,8 @@ const fetchAllAttendance = async (req, res) => {
 
   try {
     let query = `
-      SELECT a.id, a.employee_id, DATE_FORMAT(a.date, '%Y-%m-%d') AS date, a.login_time, a.logout_time, a.recipient, a.location, a.status, a.created_at,
+      SELECT a.id, a.employee_id, DATE_FORMAT(a.date, '%Y-%m-%d') AS date, 
+             a.login_time, a.logout_time, a.recipient, a.location, a.status, a.created_at,
              u.full_name AS employee_name,
              u.department_name AS department_name
       FROM attendance a
@@ -200,12 +201,8 @@ const fetchAllAttendance = async (req, res) => {
       query += ' WHERE u.department_name = ? AND (a.recipient = ? OR a.recipient = ?)';
       params = [deptHead.department_name, 'hr', deptHead.employee_id];
     } else if (role === 'super_admin') {
-      const [user] = await queryAsync(
-        'SELECT employee_id, hr_employee_id FROM hrms_users WHERE id = ? AND role = ?',
-        [id, 'super_admin']
-      );
-      query += ' WHERE a.recipient IN (?, ?, ?) OR a.status IN (?, ?)';
-      params = ['super_admin', 'hr', user.hr_employee_id || '', 'Approved', 'Rejected'];
+      // ✅ Super Admin should see ALL requests (no filter needed)
+      query += ' WHERE 1=1';
     } else {
       const [user] = await queryAsync(
         'SELECT employee_id FROM hrms_users WHERE id = ? AND role = ?',
@@ -242,12 +239,33 @@ const updateAttendanceStatus = async (req, res) => {
   }
 
   try {
+    // Fetch user details to get employee_id or full_name
+    const [user] = await queryAsync(
+      'SELECT employee_id, full_name FROM hrms_users WHERE id = ? AND role = ?',
+      [id, role]
+    );
+    if (!user) {
+      return res.status(403).json({ error: 'User not found' });
+    }
+
+    // Use employee_id for hr, full_name for super_admin
+    const recipientValue = role === 'hr' ? user.employee_id : user.full_name;
+
     const [attendance] = await queryAsync(
       'SELECT * FROM attendance WHERE id = ? AND recipient = ? AND status = ?',
-      [attendanceId, role, 'Pending']
+      [attendanceId, recipientValue, 'Pending']
     );
     if (!attendance) {
-      return res.status(404).json({ error: 'Attendance record not found, not authorized, or not pending' });
+      const [record] = await queryAsync('SELECT * FROM attendance WHERE id = ?', [attendanceId]);
+      if (!record) {
+        return res.status(404).json({ error: 'Attendance record not found' });
+      }
+      if (record.recipient !== recipientValue) {
+        return res.status(403).json({ error: 'Not authorized to update this attendance record' });
+      }
+      if (record.status !== 'Pending') {
+        return res.status(400).json({ error: `Cannot update attendance record with status '${record.status}'` });
+      }
     }
 
     const query = 'UPDATE attendance SET status = ? WHERE id = ?';
@@ -262,8 +280,8 @@ const updateAttendanceStatus = async (req, res) => {
       data: { id: attendanceId, status },
     });
   } catch (err) {
-    console.error('DB error in updateAttendanceStatus:', err);
-    res.status(500).json({ error: 'Database error' });
+    console.error('DB error in updateAttendanceStatus:', err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.sqlMessage || err.message}` });
   }
 };
 

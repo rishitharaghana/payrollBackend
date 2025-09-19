@@ -158,7 +158,7 @@ const createEmployee = async (req, res) => {
 
       const employeeId = await generateEmployeeId();
       const hashedPassword = await bcrypt.hash(password, 10);
-const baseUrl = process.env.UPLOADS_BASE_URL || `${req.protocol}://${req.get("host")}/uploads/`;
+const baseUrl = process.env.UPLOADS_BASE_URL || `http://localhost:3007/uploads/`;
 const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
 
       if (photo && !fs.existsSync(photo.path)) {
@@ -472,7 +472,7 @@ const createEmployeePersonalDetails = async (req, res) => {
 
     if (
       userRole !== "super_admin" &&
-      (fullName !== user.full_name ||
+      (fullName !== user.full_name || 
         email !== user.email ||
         phone !== user.mobile)
     ) {
@@ -970,7 +970,7 @@ const deleteEmployee = async (req, res) => {
     );
 
     await queryAsync(
-      `INSERT INTO audit_logs (action, employee_id, performed_by, details, performed_at) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO audit_log (action, employee_id, performed_by, details, performed_at) VALUES (?, ?, ?, ?, ?)`,
       [`TERMINATE_EMPLOYEE_${exitType.toUpperCase()}`, existingRecord.employee_id, req.user.employee_id, reason || 'No reason provided', new Date()]
     );
 
@@ -1369,7 +1369,7 @@ const updateEmployeePersonalDetails = async (req, res) => {
       UPDATE personal_details SET
         full_name = ?, father_name = ?, mother_name = ?, phone = ?, alternate_phone = ?, email = ?, gender = ?,
         present_address = ?, previous_address = ?, position_type = ?, employer_id_name = ?, position_title = ?,
-        employment_type = ?, joining_date = ?, pan_number = ?, adhar_number = ?, contract_end_date = ?, updated_by = ?
+        employment_type = ?, joining_date = ?, pan_number = ?, adhar_number = ?, contract_end_date = ?
       WHERE employee_id = ?
     `;
     const values = [
@@ -1469,7 +1469,7 @@ const updateEducationDetails = async (req, res) => {
       UPDATE education_details SET
         tenth_class_name = ?, tenth_class_marks = ?, intermediate_name = ?,
         intermediate_marks = ?, graduation_name = ?, graduation_marks = ?,
-        postgraduation_name = ?, postgraduation_marks = ?, updated_by = ?
+        postgraduation_name = ?, postgraduation_marks = ?
       WHERE employee_id = ?
     `;
     const values = [
@@ -1540,7 +1540,7 @@ const updateBankDetails = async (req, res) => {
 
     const updateQuery = `
       UPDATE bank_details SET
-        bank_account_number = ?, ifsc_number = ?, updated_by = ?
+        bank_account_number = ?, ifsc_number = ?
       WHERE employee_id = ?
     `;
     const values = [bankAccountNumber, ifscCode, userId, employeeId];

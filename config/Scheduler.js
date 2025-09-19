@@ -63,7 +63,7 @@ cron.schedule('0 0 1 * *', async () => {
       [retentionYears]
     );
     await queryAsync(
-      `INSERT INTO audit_logs (action, details, performed_at) VALUES (?, ?, ?)`,
+      `INSERT INTO audit_log (action, details, performed_at) VALUES (?, ?, ?)`,
       ["CLEANUP_LOCATION_LOGS", "Deleted old location logs", new Date()]
     );
     console.log('Old location logs deleted successfully');

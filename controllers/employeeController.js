@@ -61,15 +61,22 @@ const createEmployee = async (req, res) => {
       department_name,
       designation_name,
       employment_type,
-      basic_salary,
-      allowances,
-      bonuses,
       join_date,
       role = "employee",
       blood_group,
       dob,
       gender,
       password = "defaultPass123",
+      basic_salary,
+      hra_percentage,
+      hra,
+      special_allowances,
+      special_allowances_percentage,
+      provident_fund_percentage,
+      provident_fund,
+      esic_percentage,
+      esic,
+      bonus,
     } = req.body;
     const photo = req.files?.["photo"]?.[0];
 
@@ -134,13 +141,53 @@ const createEmployee = async (req, res) => {
       }
     }
 
-    if (["employee", "hr", "dept_head", "manager"].includes(role)) {
-      if (isNaN(basic_salary) || basic_salary < 0 || isNaN(allowances) || allowances < 0) {
-        return res.status(400).json({ error: "Valid basic salary and allowances are required" });
+    // Validate salary structure fields
+    const requiredSalaryFields = { basic_salary };
+    for (const [key, value] of Object.entries(requiredSalaryFields)) {
+      if (!value || value.toString().trim() === "") {
+        console.error(`Validation failed: ${key} is required`);
+        return res.status(400).json({ error: `${key} is required` });
       }
     }
 
+    const numericSalaryFields = {
+      basic_salary,
+      hra_percentage,
+      hra,
+      special_allowances,
+      special_allowances_percentage,
+      provident_fund_percentage,
+      provident_fund,
+      esic_percentage,
+      esic,
+      bonus,
+    };
+    for (const [key, value] of Object.entries(numericSalaryFields)) {
+      if (value && (isNaN(value) || Number(value) < 0)) {
+        console.error(`Validation failed: Invalid ${key}`);
+        return res.status(400).json({ error: `Invalid ${key}` });
+      }
+    }
+
+    // PF and ESI validations
+    const basicSalary = parseFloat(basic_salary) || 0;
+    const grossSalary =
+      basicSalary +
+      (parseFloat(hra) || 0) +
+      (parseFloat(special_allowances) || 0) +
+      (parseFloat(bonus) || 0);
+    if (basicSalary <= 15000 && parseFloat(provident_fund_percentage) !== 12) {
+      return res.status(400).json({ error: "PF percentage must be 12% for basic salary ≤ ₹15,000" });
+    }
+    if (grossSalary > 21000 && parseFloat(esic_percentage) > 0) {
+      return res.status(400).json({ error: "ESI not applicable for gross salary > ₹21,000" });
+    }
+    if (grossSalary <= 21000 && parseFloat(esic_percentage) !== 0.75) {
+      return res.status(400).json({ error: "ESI percentage must be 0.75% for employee contribution" });
+    }
+
     try {
+      // Check for existing mobile and email
       const [existingMobile] = await queryAsync(
         `SELECT mobile FROM hrms_users WHERE TRIM(mobile) = ?`,
         [mobile.trim()]
@@ -158,18 +205,23 @@ const createEmployee = async (req, res) => {
 
       const employeeId = await generateEmployeeId();
       const hashedPassword = await bcrypt.hash(password, 10);
-const baseUrl = process.env.UPLOADS_BASE_URL || `http://localhost:3007/uploads/`;
-const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
+      const baseUrl = process.env.UPLOADS_BASE_URL || `http://localhost:3007/uploads/`;
+      const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
 
       if (photo && !fs.existsSync(photo.path)) {
         return res.status(500).json({ error: "Failed to save uploaded photo" });
       }
-      const query = `INSERT INTO hrms_users (
-        employee_id, full_name, email, mobile, emergency_phone, address, password, 
-        department_name, designation_name, employment_type, basic_salary, allowances, 
-        bonuses, join_date, is_temporary_password, blood_group, dob, gender, photo_url, role, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-      const values = [
+
+      // Start transaction
+      await queryAsync("START TRANSACTION");
+
+      // Insert into hrms_users
+      const employeeQuery = `INSERT INTO hrms_users (
+        employee_id, full_name, email, mobile, emergency_phone, address, password,
+        department_name, designation_name, employment_type, join_date,
+        is_temporary_password, blood_group, dob, gender, photo_url, role, status, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      const employeeValues = [
         employeeId,
         name,
         email,
@@ -180,9 +232,6 @@ const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
         department_name || null,
         designation_name || null,
         employment_type || null,
-        basic_salary || 0,
-        allowances || 0,
-        bonuses || 0,
         join_date || null,
         true,
         blood_group || null,
@@ -190,14 +239,60 @@ const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
         gender || null,
         photo_url,
         role,
-        'active',
+        "active",
+        req.user.employee_id || 'SYSTEM',
       ];
 
-      console.log("Insert query:", query);
-      console.log("Insert values:", values);
+      console.log("Insert employee query:", employeeQuery);
+      console.log("Insert employee values:", employeeValues);
 
-      const result = await queryAsync(query, values);
+      const employeeResult = await queryAsync(employeeQuery, employeeValues);
 
+      // Insert into employee_salary_structure
+      const calculatedPf = provident_fund || (basicSalary * (parseFloat(provident_fund_percentage) || 12) / 100);
+      const calculatedEsi = esic || (grossSalary <= 21000 ? grossSalary * (parseFloat(esic_percentage) || 0.75) / 100 : 0);
+
+      const salaryQuery = `INSERT INTO employee_salary_structure (
+        employee_id, basic_salary, hra_percentage, hra, special_allowances,
+        special_allowances_percentage, provident_fund_percentage, provident_fund,
+        esic_percentage, esic, bonus, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
+      const salaryValues = [
+        employeeId,
+        parseFloat(basic_salary) || 0,
+        parseFloat(hra_percentage) || 0,
+        parseFloat(hra) || 0,
+        parseFloat(special_allowances) || 0,
+        parseFloat(special_allowances_percentage) || 0,
+        parseFloat(provident_fund_percentage) || 12,
+        calculatedPf,
+        parseFloat(esic_percentage) || 0.75,
+        calculatedEsi,
+        parseFloat(bonus) || 0,
+      ];
+
+      console.log("Insert salary query:", salaryQuery);
+      console.log("Insert salary values:", salaryValues);
+
+      const salaryResult = await queryAsync(salaryQuery, salaryValues);
+
+      // Insert audit log (using description column)
+      await queryAsync(
+        `INSERT INTO audit_log (action, employee_id, performed_by, description, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          "CREATE_EMPLOYEE",
+          employeeId,
+          req.user.employee_id,
+          `Created employee ${employeeId} with salary structure`,
+          new Date(),
+        ]
+      );
+
+      // Commit transaction
+      await queryAsync("COMMIT");
+
+      // Allocate leaves if applicable
       if (["employee", "hr", "dept_head", "manager"].includes(role)) {
         try {
           const { allocateMonthlyLeaves } = require("./leaveController");
@@ -216,16 +311,13 @@ const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
       res.status(201).json({
         message: `${role} created successfully`,
         data: {
-          id: result.insertId,
+          id: employeeResult.insertId,
           employee_id: employeeId,
           name,
           email,
           mobile,
           role,
           is_temporary_password: true,
-          basic_salary,
-          allowances,
-          bonuses,
           blood_group: blood_group || null,
           dob: insertedRecord?.dob || null,
           gender: gender || null,
@@ -235,10 +327,31 @@ const photo_url = photo ? `${baseUrl}${photo.filename}` : null;
             ? { department_name, designation_name }
             : {}),
           ...(role === "employee" ? { employment_type, join_date } : {}),
+          salary_structure: {
+            id: salaryResult.insertId,
+            employee_id: employeeId,
+            basic_salary,
+            hra_percentage,
+            hra,
+            special_allowances,
+            special_allowances_percentage,
+            provident_fund_percentage,
+            provident_fund: calculatedPf,
+            esic_percentage,
+            esic: calculatedEsi,
+            bonus,
+          },
         },
       });
     } catch (err) {
+      await queryAsync("ROLLBACK");
       console.error("DB error:", err.message, err.sqlMessage, err.code);
+      if (err.code === 'ER_BAD_FIELD_ERROR') {
+        return res.status(500).json({
+          error: "Database schema mismatch",
+          details: `Column ${err.sqlMessage.match(/'[^']+'/)[0]} not found in table`
+        });
+      }
       res.status(500).json({ error: `Database error: ${err.message}` });
     }
   });
@@ -407,6 +520,155 @@ const updateEmployee = async (req, res) => {
   });
 };
 
+const createSalaryStructure = async (req, res) => {
+  console.log("createSalaryStructure: Received payload:", req.body);
+  const userRole = req.user.role;
+  if (!["super_admin", "hr"].includes(userRole)) {
+    console.error("Access denied: Invalid role", userRole);
+    return res.status(403).json({ error: "Access denied" });
+  }
+
+  const {
+    employee_id,
+    basic_salary,
+    hra_percentage,
+    hra_amount,
+    special_allowances,
+    special_allowances_percentage,
+    pf_percentage,
+    pf_amount,
+    esi_percentage,
+    esi_amount,
+    bonus,
+  } = req.body;
+
+  const requiredFields = { employee_id, basic_salary };
+  for (const [key, value] of Object.entries(requiredFields)) {
+    if (!value || value.toString().trim() === "") {
+      console.error(`Validation failed: ${key} is required`);
+      return res.status(400).json({ error: `${key} is required` });
+    }
+  }
+
+  const numericFields = {
+    basic_salary,
+    hra_percentage,
+    hra_amount,
+    special_allowances,
+    special_allowances_percentage,
+    pf_percentage,
+    pf_amount,
+    esi_percentage,
+    esi_amount,
+    bonus,
+  };
+  for (const [key, value] of Object.entries(numericFields)) {
+    if (value && (isNaN(value) || Number(value) < 0)) {
+      console.error(`Validation failed: Invalid ${key}`);
+      return res.status(400).json({ error: `Invalid ${key}` });
+    }
+  }
+
+  try {
+    const [employee] = await queryAsync(
+      "SELECT employee_id, status FROM hrms_users WHERE employee_id = ?",
+      [employee_id]
+    );
+    if (!employee) {
+      console.error(`Employee not found: ${employee_id}`);
+      return res.status(404).json({ error: "Employee not found" });
+    }
+    if (employee.status !== 'active') {
+      console.error(`Employee is not active: ${employee_id}, status: ${employee.status}`);
+      return res.status(400).json({ error: `Employee is not active (status: ${employee.status})` });
+    }
+
+    const [existingSalary] = await queryAsync(
+      "SELECT id FROM employee_salary_structure WHERE employee_id = ? AND effective_date = ?",
+      [employee_id, new Date().toISOString().split('T')[0]]
+    );
+    if (existingSalary) {
+      console.error(`Salary structure already exists for employee: ${employee_id}`);
+      return res.status(400).json({ error: "Salary structure already exists for this employee on this date" });
+    }
+
+    const calculatedPf = pf_amount || (parseFloat(basic_salary) * (parseFloat(pf_percentage) || 12) / 100);
+    const grossSalary =
+      parseFloat(basic_salary) +
+      (parseFloat(hra_amount) || 0) +
+      (parseFloat(special_allowances) || 0) +
+      (parseFloat(bonus) || 0);
+    const calculatedEsi = esi_amount || (grossSalary <= 21000 ? grossSalary * (parseFloat(esi_percentage) || 0.75) / 100 : 0);
+
+    const salaryQuery = `INSERT INTO employee_salary_structure (
+      employee_id, basic_salary, hra_percentage, hra, special_allowances,
+      special_allowances_percentage, provident_fund_percentage, provident_fund,
+      esic_percentage, esic, bonus, effective_date, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
+    const salaryValues = [
+      employee_id,
+      parseFloat(basic_salary) || 0,
+      parseFloat(hra_percentage) || 0,
+      parseFloat(hra_amount) || 0,
+      parseFloat(special_allowances) || 0,
+      parseFloat(special_allowances_percentage) || 0,
+      parseFloat(pf_percentage) || 12,
+      calculatedPf,
+      parseFloat(esi_percentage) || 0.75,
+      calculatedEsi,
+      parseFloat(bonus) || 0,
+      new Date().toISOString().split('T')[0],
+    ];
+
+    console.log("Insert salary query:", salaryQuery);
+    console.log("Insert salary values:", salaryValues);
+
+    const [result] = await queryAsync(salaryQuery, salaryValues);
+
+    await queryAsync(
+      `INSERT INTO audit_log (action, employee_id, performed_by, description, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        "CREATE_SALARY_STRUCTURE",
+        employee_id,
+        req.user.employee_id,
+        `Created salary structure for ${employee_id}`,
+        new Date(),
+      ]
+    );
+
+    res.status(201).json({
+      message: "Salary structure created successfully",
+      data: {
+        id: result.insertId,
+        employee_id,
+        basic_salary,
+        hra_percentage,
+        hra: hra_amount,
+        special_allowances,
+        special_allowances_percentage,
+        provident_fund_percentage: pf_percentage,
+        provident_fund: calculatedPf,
+        esic_percentage: esi_percentage,
+        esic: calculatedEsi,
+        bonus,
+      },
+    });
+  } catch (err) {
+    console.error("DB error in createSalaryStructure:", err.message, err.sqlMessage);
+    if (err.code === 'ER_BAD_FIELD_ERROR') {
+      return res.status(500).json({
+        error: "Database schema mismatch",
+        details: `Column ${err.sqlMessage.match(/'[^']+'/)[0]} not found in table`
+      });
+    }
+    res.status(500).json({
+      error: "Database error",
+      details: err.sqlMessage || err.message,
+    });
+  }
+};
+
 const createEmployeePersonalDetails = async (req, res) => {
   const userRole = req.user.role;
   const userId = req.user.employee_id;
@@ -425,7 +687,7 @@ const createEmployeePersonalDetails = async (req, res) => {
     employerIdName,
     positionTitle,
     employmentType,
-    joiningDate,
+    joinDate,
     contractEndDate,
     pan_number,
     adhar_number,
@@ -530,7 +792,7 @@ const createEmployeePersonalDetails = async (req, res) => {
       INSERT INTO personal_details (
         employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
         present_address, previous_address, position_type, employer_id_name, position_title,
-        employment_type, joining_date, pan_number, adhar_number, contract_end_date, created_by
+        employment_type, join_date, pan_number, adhar_number, contract_end_date, created_by
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const personalValues = [
@@ -548,7 +810,7 @@ const createEmployeePersonalDetails = async (req, res) => {
       employerIdName || null,
       positionTitle || null,
       employmentType || null,
-      joiningDate || null,
+      joinDate || null,
       pan_number || null,
       adhar_number || null,
       contractEndDate || null,
@@ -669,7 +931,7 @@ const createEducationDetails = async (req, res) => {
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
-
+ 
 const createDocuments = async (req, res) => {
   upload.fields([{ name: "document", maxCount: 1 }])(req, res, async (err) => {
     if (err) {
@@ -843,10 +1105,9 @@ const fetchEmployees = async (req, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const baseUrl =
-      process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     const employees = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, basic_salary, allowances, join_date, dob, blood_group, gender, emergency_phone, role,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, join_date, dob, blood_group, gender, emergency_phone, role,
               photo_url
        FROM hrms_users WHERE role IN ('dept_head', 'manager', 'employee')`,
       [baseUrl]
@@ -870,10 +1131,9 @@ const getEmployeeById = async (req, res) => {
   }
 
   try {
-    const baseUrl =
-      process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     const [employee] = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, basic_salary, allowances, join_date, blood_group, gender, dob,
+      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, join_date, blood_group, gender, dob,
               CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url,
               role
        FROM hrms_users WHERE id = ?`,
@@ -1143,7 +1403,7 @@ const getEmployeePersonalDetails = async (req, res) => {
     const [personalDetails] = await queryAsync(
       `SELECT employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
               present_address, previous_address, position_type, employer_id_name, position_title,
-              employment_type, joining_date, contract_end_date, pan_number, adhar_number
+              employment_type, join_date, contract_end_date, pan_number, adhar_number
        FROM personal_details WHERE employee_id = ?`,
       [employeeId]
     );
@@ -1300,7 +1560,7 @@ const updateEmployeePersonalDetails = async (req, res) => {
     employerIdName,
     positionTitle,
     employmentType,
-    joiningDate,
+    joinDate,
     contractEndDate,
     pan_number,
     adhar_number,
@@ -1369,7 +1629,7 @@ const updateEmployeePersonalDetails = async (req, res) => {
       UPDATE personal_details SET
         full_name = ?, father_name = ?, mother_name = ?, phone = ?, alternate_phone = ?, email = ?, gender = ?,
         present_address = ?, previous_address = ?, position_type = ?, employer_id_name = ?, position_title = ?,
-        employment_type = ?, joining_date = ?, pan_number = ?, adhar_number = ?, contract_end_date = ?
+        employment_type = ?, join_date = ?, pan_number = ?, adhar_number = ?, contract_end_date = ?
       WHERE employee_id = ?
     `;
     const values = [
@@ -1386,7 +1646,7 @@ const updateEmployeePersonalDetails = async (req, res) => {
       employerIdName || null,
       positionTitle || null,
       employmentType || null,
-      joiningDate || null,
+      joinDate || null,
       pan_number || null,
       adhar_number || null,
       contractEndDate || null,
@@ -1578,4 +1838,5 @@ module.exports = {
   updateBankDetails,
   updateEducationDetails,
   updateEmployeePersonalDetails,
+  createSalaryStructure,
 };

@@ -1,6 +1,6 @@
 const express = require('express');
 const { authenticateToken } = require('../middleware/authenticate');
-const { fetchEmployeePerformance, setEmployeeGoal, updateGoalProgress, conductAppraisal, submitSelfReview } = require('../controllers/performanceController');
+const { fetchEmployeePerformance, setEmployeeGoal, updateGoalProgress, conductAppraisal, submitSelfReview, awardBonus } = require('../controllers/performanceController');
 const router = express.Router();
 
 router.get('/employee-performance/:employee_id', authenticateToken, fetchEmployeePerformance);
@@ -8,5 +8,6 @@ router.post('/employee/goals', authenticateToken, setEmployeeGoal);
 router.put('/employee-performance/goals/:goal_id', authenticateToken, updateGoalProgress);
 router.post('/employee/appraisals', authenticateToken, conductAppraisal);
 router.post('/employee/self-review', authenticateToken, submitSelfReview);
+router.post('/employee/awardbonus', authenticateToken, awardBonus);
 
 module.exports = router;    

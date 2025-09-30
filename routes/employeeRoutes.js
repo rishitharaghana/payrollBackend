@@ -20,6 +20,7 @@ const {
   updateEmployeePersonalDetails,
   updateEducationDetails,
   updateBankDetails,
+  createSalaryStructure,
 } = require("../controllers/employeeController");
 
 router.post("/employees", authenticateToken, createEmployee);
@@ -40,5 +41,6 @@ router.get('/employees/education-details/:employeeId', authenticateToken, getEmp
 router.put('/employees/personal-details/:employeeId', authenticateToken, updateEmployeePersonalDetails);
 router.put('/employees/education-details/:employeeId', authenticateToken, updateEducationDetails);
 router.put('/employees/bank-details/:employeeId', authenticateToken, updateBankDetails);
+router.post('/employees/salary', authenticateToken, createSalaryStructure)
 
 module.exports = router;

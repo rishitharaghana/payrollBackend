@@ -6,9 +6,7 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 const markAttendance = async (req, res) => {
   const { employee_id, date, login_time, logout_time, recipient_id, location } = req.body;
   const { role, id } = req.user;
-
   console.log("markAttendance called with body:", req.body, "user:", { role, id });
-
   if (!employee_id || !date || !login_time || !location || !recipient_id) {
     console.log("Validation failed. Missing fields:", {
       employee_id,
@@ -19,11 +17,9 @@ const markAttendance = async (req, res) => {
     });
     return res.status(400).json({ error: "Date, login time, location, and recipient are required" });
   }
-
   if (!["Office", "Remote"].includes(location)) {
     return res.status(400).json({ error: "Invalid location. Must be 'Office' or 'Remote'" });
   }
-
   if (logout_time) {
     const login = new Date(`1970-01-01T${login_time}:00`);
     const logout = new Date(`1970-01-01T${logout_time}:00`);
@@ -36,7 +32,6 @@ const markAttendance = async (req, res) => {
   }
 
   try {
-    // Verify the authenticated user
     const [user] = await queryAsync(
       `SELECT employee_id FROM hrms_users WHERE id = ? AND role = ?`,
       [id, role]
@@ -44,17 +39,13 @@ const markAttendance = async (req, res) => {
     if (!user || (user.employee_id !== employee_id && !["super_admin", "hr"].includes(role))) {
       return res.status(403).json({ error: "Unauthorized to mark attendance for this employee" });
     }
-
-    // Validate recipient_id
     let recipient;
     if (role === "hr") {
-      // HR submits to Super Admin (recipient_id is full_name)
       [recipient] = await queryAsync(
         `SELECT full_name, role FROM hrms_users WHERE full_name = ? AND role = 'super_admin' AND status = 'active'`,
         [recipient_id]
       );
     } else {
-      // Employees and dept_head submit to HR (recipient_id is employee_id)
       [recipient] = await queryAsync(
         `SELECT employee_id, role, full_name FROM hrms_users WHERE employee_id = ? AND role = 'hr' AND status = 'active'`,
         [recipient_id]
@@ -66,7 +57,6 @@ const markAttendance = async (req, res) => {
       });
     }
 
-    // Check for existing attendance
     const [existingAttendance] = await queryAsync(
       "SELECT * FROM attendance WHERE employee_id = ? AND date = ?",
       [employee_id, date]
@@ -74,8 +64,6 @@ const markAttendance = async (req, res) => {
     if (existingAttendance) {
       return res.status(400).json({ error: "Attendance already marked for this date" });
     }
-
-    // Set status based on role
     const status = ["hr", "super_admin"].includes(role) ? "Approved" : "Pending";
 
     const query = `
@@ -88,12 +76,10 @@ const markAttendance = async (req, res) => {
       login_time,
       logout_time || null,
       status,
-      recipient_id, // Store employee_id for HR or full_name for Super Admin
+      recipient_id, 
       location,
     ];
-
     const result = await queryAsync(query, values);
-
     res.status(201).json({
       message: `Attendance marked successfully${status === "Approved" ? " and auto-approved" : ""}`,
       data: {
@@ -116,7 +102,6 @@ const markAttendance = async (req, res) => {
 
 const fetchEmployeeAttendance = async (req, res) => {
   const { role, id } = req.user;
-
   try {
     const [user] = await queryAsync(
       `SELECT employee_id, full_name FROM hrms_users WHERE id = ? AND role = ?`,
@@ -125,7 +110,6 @@ const fetchEmployeeAttendance = async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
-
     const attendance = await queryAsync(
       `SELECT a.id, a.employee_id, DATE_FORMAT(a.date, '%Y-%m-%d') AS date, 
               a.login_time, a.logout_time, a.recipient AS recipient_id, 
@@ -139,9 +123,7 @@ const fetchEmployeeAttendance = async (req, res) => {
        LIMIT 10`,
       [user.employee_id]
     );
-
     console.log("fetchEmployeeAttendance raw data:", attendance);
-
     res.json({
       message: 'Attendance records fetched successfully',
       data: {
@@ -400,12 +382,10 @@ const getAllEmployeesTotalWorkingHours = async (req, res) => {
         AND a.logout_time IS NOT NULL
     `;
     let params = [];
-
     if (start_date && end_date) {
       query += ' AND a.date BETWEEN ? AND ?';
       params.push(start_date, end_date);
     }
-
     if (role === 'dept_head') {
       const [deptHead] = await queryAsync(
         'SELECT department_name FROM hrms_users WHERE id = ? AND role = ?',
@@ -417,18 +397,14 @@ const getAllEmployeesTotalWorkingHours = async (req, res) => {
       query += ' AND u.department_name = ?';
       params.push(deptHead.department_name);
     }
-
     query += ' GROUP BY a.employee_id, u.full_name, u.department_name';
-
     const attendance = await queryAsync(query, params);
-
     const result = attendance.map(record => ({
       employee_id: record.employee_id,
       employee_name: record.employee_name,
       department_name: record.department_name,
       total_working_hours: parseFloat(record.total_working_hours) || 0,
     }));
-
     res.json({
       message: 'Total working hours for all employees fetched successfully',
       data: result,

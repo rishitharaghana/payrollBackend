@@ -40,9 +40,19 @@ const submitTravelExpense = async (req, res) => {
 
     console.log("Received data:", { employee_id, travel_date, destination, travel_purpose, total_amount, expenses, receipt: receipt?.filename });
 
-    if (!employee_id || !travel_date || !destination || !travel_purpose || !total_amount || !expenses) {
+    // Strict validation for required fields
+    if (
+      !employee_id?.trim() ||
+      !travel_date ||
+      !destination?.trim() ||
+      !travel_purpose?.trim() ||
+      !total_amount ||
+      isNaN(total_amount) ||
+      total_amount <= 0 ||
+      !expenses
+    ) {
       if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
-      return res.status(400).json({ error: "All fields are required" });
+      return res.status(400).json({ error: "All fields are required, must be non-empty, and total_amount must be a positive number" });
     }
 
     if (isNaN(Date.parse(travel_date))) {
@@ -51,11 +61,14 @@ const submitTravelExpense = async (req, res) => {
     }
 
     try {
-      const [employee] = await queryAsync("SELECT employee_id FROM hrms_users WHERE employee_id = ?", [employee_id]);
+      const [employee] = await queryAsync(
+        "SELECT employee_id, full_name, department_name FROM hrms_users WHERE employee_id = ? AND full_name IS NOT NULL AND department_name IS NOT NULL",
+        [employee_id]
+      );
       console.log("Fetched employee:", employee);
       if (!employee) {
         if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
-        return res.status(404).json({ error: "Employee not found" });
+        return res.status(404).json({ error: "Employee not found or missing required profile data (full_name, department_name)" });
       }
       const stringEmployeeId = String(employee.employee_id);
 
@@ -75,13 +88,19 @@ const submitTravelExpense = async (req, res) => {
       }
       if (!Array.isArray(parsedExpenses) || parsedExpenses.length === 0) {
         if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
-        return res.status(400).json({ error: "Invalid expenses data" });
+        return res.status(400).json({ error: "Expenses must be a non-empty array" });
       }
 
       for (const exp of parsedExpenses) {
-        if (!exp.expense_date || !exp.purpose || !exp.amount || isNaN(exp.amount) || exp.amount <= 0) {
+        if (
+          !exp.expense_date ||
+          !exp.purpose?.trim() ||
+          !exp.amount ||
+          isNaN(exp.amount) ||
+          exp.amount <= 0
+        ) {
           if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
-          return res.status(400).json({ error: "Invalid expense item data" });
+          return res.status(400).json({ error: "Invalid expense item data: expense_date, purpose, and amount must be valid" });
         }
         if (isNaN(Date.parse(exp.expense_date))) {
           if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
@@ -157,7 +176,7 @@ const fetchTravelExpenses = async (req, res) => {
 
   try {
     const [user] = await queryAsync("SELECT employee_id, role, department_name FROM hrms_users WHERE id = ?", [id]);
-    console.log("Fetched user:", user);
+    console.log("Fetched user for expenses:", user);
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -178,16 +197,18 @@ const fetchTravelExpenses = async (req, res) => {
     let countParams = [];
 
     if (role === "dept_head") {
-      query += " WHERE u.department_name = ? AND te.status = ?";
-      countQuery += " WHERE u.department_name = ? AND te.status = ?";
-      params = [user.department_name, "Pending"];
-      countParams = [user.department_name, "Pending"];
+      // Department heads see Pending submissions in their department
+      query += user.department_name ? " WHERE u.department_name = ? AND te.status = ?" : " WHERE te.status = ?";
+      countQuery += user.department_name ? " WHERE u.department_name = ? AND te.status = ?" : " WHERE te.status = ?";
+      params = user.department_name ? [user.department_name, "Pending"] : ["Pending"];
+      countParams = user.department_name ? [user.department_name, "Pending"] : ["Pending"];
     } else if (role === "employee") {
       query += " WHERE te.employee_id = ?";
       countQuery += " WHERE te.employee_id = ?";
       params = [user.employee_id];
       countParams = [user.employee_id];
-    } else {
+    } else if (role === "hr" || role === "super_admin") {
+      // HR and super admins see all Pending submissions
       query += " WHERE te.status = ?";
       countQuery += " WHERE te.status = ?";
       params = ["Pending"];
@@ -201,20 +222,23 @@ const fetchTravelExpenses = async (req, res) => {
       queryAsync(query, params),
       queryAsync(countQuery, countParams),
     ]);
-    console.log("Submissions:", submissions);
-    console.log("Count result:", countResult);
+    console.log("Raw submissions (expenses):", JSON.stringify(submissions, null, 2));
+    console.log("Count result (expenses):", countResult);
 
-    const total = countResult.length > 0 && countResult[0].total !== undefined ? countResult[0].total : 0;
+    const total = countResult[0]?.total || 0;
 
     const groupedSubmissions = submissions.reduce((acc, row) => {
-      if (!row.id) return acc;
+      if (!row.id) {
+        console.warn("Skipping row with missing id:", row);
+        return acc;
+      }
       const submission = acc.find((s) => s.id === row.id);
       const expense = row.expense_item_id
         ? {
             id: row.expense_item_id,
-            expense_date: row.expense_date,
-            purpose: row.expense_purpose,
-            amount: row.amount,
+            expense_date: row.expense_date || "N/A",
+            purpose: row.expense_purpose || "N/A",
+            amount: Number(row.amount) || 0,
           }
         : null;
 
@@ -223,27 +247,31 @@ const fetchTravelExpenses = async (req, res) => {
       } else {
         acc.push({
           id: row.id,
-          employee_id: row.employee_id,
+          employee_id: row.employee_id || "N/A",
           employee_name: row.employee_name || row.employee_id || "Unknown",
           department_name: row.department_name || "Unknown",
-          travel_date: row.travel_date,
-          destination: row.destination,
-          travel_purpose: row.travel_purpose,
-          total_amount: row.total_amount,
+          travel_date: row.travel_date || "N/A",
+          destination: row.destination || "N/A",
+          travel_purpose: row.travel_purpose || "N/A",
+          total_amount: Number(row.total_amount) || 0,
           status: row.status || "Unknown",
-          approved_by: row.approved_by,
-          created_at: row.created_at,
-          updated_at: row.updated_at,
+          approved_by: row.approved_by || null,
+          created_at: row.created_at || null,
+          updated_at: row.updated_at || null,
           admin_comment: row.admin_comment || null,
-          receipt_path: row.receipt_path,
+          receipt_path: row.receipt_path || null,
           expenses: expense ? [expense] : [],
         });
       }
       return acc;
     }, []);
 
+    console.log("Grouped submissions (expenses):", JSON.stringify(groupedSubmissions, null, 2));
+
     res.status(200).json({
-      message: "Travel expense submissions fetched successfully",
+      message: groupedSubmissions.length > 0
+        ? "Travel expense submissions fetched successfully"
+        : "No travel expense submissions found",
       data: groupedSubmissions,
       pagination: {
         total,
@@ -267,8 +295,8 @@ const fetchTravelExpenseHistory = async (req, res) => {
   }
 
   try {
-    const [user] = await queryAsync("SELECT employee_id, role FROM hrms_users WHERE id = ?", [id]);
-    console.log("Fetched user:", user);
+    const [user] = await queryAsync("SELECT employee_id, role, department_name FROM hrms_users WHERE id = ?", [id]);
+    console.log("Fetched user for history:", user);
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -279,12 +307,14 @@ const fetchTravelExpenseHistory = async (req, res) => {
       FROM travel_expenses te
       LEFT JOIN expense_items ei ON te.id = ei.travel_expense_id
       LEFT JOIN hrms_users u ON te.employee_id = u.employee_id
+      WHERE te.status IN ('Approved', 'Rejected')
       ORDER BY te.created_at DESC
       LIMIT ? OFFSET ?
     `;
     const countQuery = `
-      SELECT COUNT(*) as total
+      SELECT COUNT(DISTINCT te.id) as total
       FROM travel_expenses te
+      WHERE te.status IN ('Approved', 'Rejected')
     `;
     const params = [Number(limit), Number(limit) * (Number(page) - 1)];
 
@@ -292,20 +322,23 @@ const fetchTravelExpenseHistory = async (req, res) => {
       queryAsync(query, params),
       queryAsync(countQuery, []),
     ]);
-    console.log("Submissions (history):", submissions);
+    console.log("Raw submissions (history):", JSON.stringify(submissions, null, 2));
     console.log("Count result (history):", countResult);
 
-    const total = countResult.length > 0 && countResult[0].total !== undefined ? countResult[0].total : 0;
+    const total = countResult[0]?.total || 0;
 
     const groupedSubmissions = submissions.reduce((acc, row) => {
-      if (!row.id) return acc;
+      if (!row.id) {
+        console.warn("Skipping row with missing id:", row);
+        return acc;
+      }
       const submission = acc.find((s) => s.id === row.id);
       const expense = row.expense_item_id
         ? {
             id: row.expense_item_id,
-            expense_date: row.expense_date,
-            purpose: row.expense_purpose,
-            amount: row.amount,
+            expense_date: row.expense_date || "N/A",
+            purpose: row.expense_purpose || "N/A",
+            amount: Number(row.amount) || 0,
           }
         : null;
 
@@ -314,27 +347,31 @@ const fetchTravelExpenseHistory = async (req, res) => {
       } else {
         acc.push({
           id: row.id,
-          employee_id: row.employee_id,
+          employee_id: row.employee_id || "N/A",
           employee_name: row.employee_name || row.employee_id || "Unknown",
           department_name: row.department_name || "Unknown",
-          travel_date: row.travel_date,
-          destination: row.destination,
-          travel_purpose: row.travel_purpose,
-          total_amount: row.total_amount,
+          travel_date: row.travel_date || "N/A",
+          destination: row.destination || "N/A",
+          travel_purpose: row.travel_purpose || "N/A",
+          total_amount: Number(row.total_amount) || 0,
           status: row.status || "Unknown",
-          approved_by: row.approved_by,
-          created_at: row.created_at,
-          updated_at: row.updated_at,
+          approved_by: row.approved_by || null,
+          created_at: row.created_at || null,
+          updated_at: row.updated_at || null,
           admin_comment: row.admin_comment || null,
-          receipt_path: row.receipt_path,
+          receipt_path: row.receipt_path || null,
           expenses: expense ? [expense] : [],
         });
       }
       return acc;
     }, []);
 
+    console.log("Grouped submissions (history):", JSON.stringify(groupedSubmissions, null, 2));
+
     res.status(200).json({
-      message: "Travel expense history fetched successfully",
+      message: groupedSubmissions.length > 0
+        ? "Travel expense history fetched successfully"
+        : "No travel expense history records found",
       data: groupedSubmissions,
       pagination: {
         total,
@@ -498,9 +535,10 @@ const downloadReceipt = async (req, res) => {
       `,
       [travelExpenseId]
     );
-    console.log("Fetched travel expense:", travelExpense);
+    console.log("Fetched travel expense for ID", travelExpenseId, ":", travelExpense);
 
     if (!travelExpense) {
+      console.error("No travel expense found for ID:", travelExpenseId);
       return res.status(404).json({ error: "Travel expense not found" });
     }
 
@@ -519,6 +557,7 @@ const downloadReceipt = async (req, res) => {
     const filePath = path.join(uploadDir, filename);
 
     if (!fs.existsSync(filePath)) {
+      console.error("Receipt file not found at:", filePath);
       return res.status(404).json({ error: "Receipt file not found on server" });
     }
 

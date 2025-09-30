@@ -23,6 +23,7 @@ const allowedOrigins = [
   'http://localhost:3004',
  'https://fe2663e99cb4.ngrok-free.app',
 ];
+const holidayRouter = require('./routes/holidayRoutes');
 
 const server = http.createServer(app);
 initializeSocket(server, allowedOrigins);
@@ -65,6 +66,7 @@ app.use('/api', siteVisitRouter);
 app.use('/api', companyRouter);
 app.use('/api', vistingRouter);
 app.use('/api', dashboardRouter);
+app.use('/api', holidayRouter);
 
 const port = 3007;
 server.listen(port, () => {

@@ -65,7 +65,15 @@ const getDashboardData = async (req, res) => {
       SELECT 
         (SELECT COUNT(*) FROM hrms_users WHERE role IN ('dept_head', 'manager', 'employee')) as total_employees,
         (SELECT COUNT(DISTINCT employee_id) FROM attendance WHERE DATE(created_at) = CURDATE() AND status = 'Approved') as present_today,
-        (SELECT COALESCE(SUM(COALESCE(basic_salary, 0) + COALESCE(allowances, 0) + COALESCE(bonuses, 0)), 0) FROM hrms_users WHERE role IN ('dept_head', 'manager', 'employee')) as monthly_payroll,
+(SELECT COALESCE(SUM(
+          COALESCE(ess.basic_salary, 0) 
+        + COALESCE(ess.hra, 0) 
+        + COALESCE(ess.special_allowances, 0) 
+        + COALESCE(ess.bonus, 0)
+    ), 0)
+ FROM employee_salary_structure ess
+ JOIN hrms_users u ON ess.employee_id = u.employee_id
+ WHERE u.role IN ('dept_head', 'manager', 'employee')) as monthly_payroll,
         (SELECT COUNT(*) FROM leaves l JOIN leave_recipients lr ON l.id = lr.leave_id WHERE l.status = 'Pending' AND lr.recipient_id = ?) as pending_leaves
     `;
     let statsParams = [userId];

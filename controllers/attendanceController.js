@@ -6,15 +6,8 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 const markAttendance = async (req, res) => {
   const { employee_id, date, login_time, logout_time, recipient_id, location } = req.body;
   const { role, id } = req.user;
-  console.log("markAttendance called with body:", req.body, "user:", { role, id });
   if (!employee_id || !date || !login_time || !location || !recipient_id) {
-    console.log("Validation failed. Missing fields:", {
-      employee_id,
-      date,
-      login_time,
-      location,
-      recipient_id,
-    });
+   
     return res.status(400).json({ error: "Date, login time, location, and recipient are required" });
   }
   if (!["Office", "Remote"].includes(location)) {
@@ -123,7 +116,6 @@ const fetchEmployeeAttendance = async (req, res) => {
        LIMIT 10`,
       [user.employee_id]
     );
-    console.log("fetchEmployeeAttendance raw data:", attendance);
     res.json({
       message: 'Attendance records fetched successfully',
       data: {
@@ -321,7 +313,6 @@ const getEmployeeAverageWorkingHours = async (req, res) => {
     query += ' ORDER BY a.date';
 
     const attendance = await queryAsync(query, params);
-    console.log('Raw attendance data for employee', employeeId, ':', attendance); // Debug
 
     if (attendance.length === 0) {
       return res.status(200).json({
@@ -444,7 +435,6 @@ const getTotalAverageWorkingHours = async (req, res) => {
     query += ' GROUP BY a.date ORDER BY a.date';
 
     const attendance = await queryAsync(query, params);
-    console.log('Raw attendance data for total average:', attendance); 
 
     if (attendance.length === 0) {
       return res.status(200).json({

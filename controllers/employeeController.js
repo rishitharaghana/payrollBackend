@@ -519,7 +519,7 @@ const updateEmployee = async (req, res) => {
     }
   });
 };
-
+  
 const createSalaryStructure = async (req, res) => {
   console.log("createSalaryStructure: Received payload:", req.body);
   const userRole = req.user.role;
@@ -1100,17 +1100,28 @@ const createBankDetails = async (req, res) => {
 const fetchEmployees = async (req, res) => {
   try {
     const userRole = req.user.role;
-    if (!["super_admin", "hr"].includes(userRole)) {
+    const userDept = req.user.department;
+
+    // Allow super_admin, hr, manager, dept_head
+    if (!["super_admin", "hr", "manager", "dept_head"].includes(userRole)) {
       return res.status(403).json({ error: "Access denied" });
     }
 
     const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
-    const employees = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, join_date, dob, blood_group, gender, emergency_phone, role,
-              photo_url
-       FROM hrms_users WHERE role IN ('dept_head', 'manager', 'employee')`,
-      [baseUrl]
-    );
+
+    let sql = `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, join_date, dob, blood_group, gender, emergency_phone, role, photo_url
+               FROM hrms_users 
+               WHERE role IN ('dept_head', 'manager', 'employee')`;
+
+    const params = [];
+
+    // Dept_head should only see their own department
+    if (userRole === "dept_head" || userRole === "manager") {
+      sql += ` AND department_name = ?`;
+      params.push(userDept);
+    }
+
+    const employees = await queryAsync(sql, params);
 
     res.json({ message: "Employees fetched successfully", data: employees });
   } catch (err) {
@@ -1118,6 +1129,7 @@ const fetchEmployees = async (req, res) => {
     res.status(500).json({ error: "Database error" });
   }
 };
+
 
 const getEmployeeById = async (req, res) => {
   const { id } = req.params;

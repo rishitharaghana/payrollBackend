@@ -332,7 +332,7 @@ const generatePayroll = async (req, res) => {
     console.log("Deleting existing payroll records...");
     await queryAsync("DELETE FROM payroll WHERE month = ?", [month]);
     const payrolls = [];
-    const skippedEmployees = []; // Track skipped employees
+    const skippedEmployees = [];
 
     for (const emp of employees) {
       console.log(`Fetching salary structure for ${emp.employee_id}...`);
@@ -351,15 +351,8 @@ const generatePayroll = async (req, res) => {
           full_name: emp.full_name,
           reason: 'No salary structure'
         });
-        // Debug similar employee_ids
-        const [similarRecords] = await queryAsync(
-          `SELECT employee_id FROM employee_salary_structure WHERE employee_id LIKE ?`,
-          [`%${emp.employee_id}%`]
-        );
-        console.log(`Similar employee_ids found for ${emp.employee_id}:`, similarRecords || []);
         continue;
       }
-      console.log(`Salary structure for ${emp.employee_id}:`, salaryStructure);
 
       if (["employee", "manager"].includes(emp.role) && !emp.join_date) {
         console.warn(`Skipping employee ${emp.employee_id} due to missing join_date`);
@@ -371,13 +364,11 @@ const generatePayroll = async (req, res) => {
         continue;
       }
 
-      console.log(`Checking for existing payroll for ${emp.employee_id}, month ${month}...`);
       const [existingPayroll] = await queryAsync(
         `SELECT id FROM payroll WHERE employee_id = ? AND month = ?`,
         [emp.employee_id, month]
       );
       if (existingPayroll) {
-        console.warn(`Payroll already exists for ${emp.employee_id} for ${month}`);
         skippedEmployees.push({
           employee_id: emp.employee_id,
           full_name: emp.full_name,
@@ -386,15 +377,10 @@ const generatePayroll = async (req, res) => {
         continue;
       }
 
-      console.log(`Calculating leave and attendance for ${emp.employee_id}...`);
       const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays } = await calculateLeaveAndAttendance(emp.employee_id, month);
 
-      const hra = salaryStructure.hra || (salaryStructure.hra_percentage * salaryStructure.basic_salary) / 100 || 0;
-      const gross_salary =
-        parseFloat(salaryStructure.basic_salary || 0) +
-        parseFloat(hra || 0) +
-        parseFloat(salaryStructure.special_allowances || 0) +
-        parseFloat(salaryStructure.bonus || 0);
+      const hra = Number(salaryStructure.hra) || (Number(salaryStructure.hra_percentage || 0) * Number(salaryStructure.basic_salary || 0) / 100);
+      const gross_salary = Number(salaryStructure.basic_salary || 0) + hra + Number(salaryStructure.special_allowances || 0) + Number(salaryStructure.bonus || 0);
 
       let adjustedGrossSalary = gross_salary;
       let salaryAdjustment = 0;
@@ -405,12 +391,15 @@ const generatePayroll = async (req, res) => {
         adjustedGrossSalary = effectiveWorkingDays * dailyRate;
       }
 
-      const pf_deduction = salaryStructure.provident_fund || Math.min(adjustedGrossSalary * (salaryStructure.provident_fund_percentage / 100 || 0.12), 1800);
-      const esic_deduction = salaryStructure.esic || (adjustedGrossSalary <= 21000 ? adjustedGrossSalary * (salaryStructure.esic_percentage / 100 || 0.0075) : 0);
+      const pf_deduction = Number(salaryStructure.provident_fund) || Math.min(adjustedGrossSalary * ((Number(salaryStructure.provident_fund_percentage) || 12) / 100), 1800);
+      const esic_deduction = Number(salaryStructure.esic) || (adjustedGrossSalary <= 21000 ? adjustedGrossSalary * ((Number(salaryStructure.esic_percentage) || 0.75) / 100) : 0);
       const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
       const tax_deduction = calculateTax(adjustedGrossSalary);
-      const net_salary =
-        adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction);
+
+      let net_salary = adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction);
+      if (!isFinite(net_salary) || isNaN(net_salary)) net_salary = 0;
+
+      const effectiveDays = presentDays + paidLeaveDays;
 
       const payrollData = {
         employee_id: emp.employee_id,
@@ -422,13 +411,13 @@ const generatePayroll = async (req, res) => {
         esic_deduction,
         professional_tax,
         tax_deduction,
-        basic_salary: totalWorkingDays > 0 ? (parseFloat(salaryStructure.basic_salary) * (presentDays + paidLeaveDays) / totalWorkingDays) || 0 : 0,
-        hra: totalWorkingDays > 0 ? (parseFloat(hra) * (presentDays + paidLeaveDays) / totalWorkingDays) || 0 : 0,
-        special_allowances: totalWorkingDays > 0 ? (parseFloat(salaryStructure.special_allowances) * (presentDays + paidLeaveDays) / totalWorkingDays) || 0 : 0,
-        bonus: totalWorkingDays > 0 ? (parseFloat(salaryStructure.bonus) * (presentDays + paidLeaveDays) / totalWorkingDays) || 0 : 0,
+        basic_salary: totalWorkingDays > 0 ? Number(salaryStructure.basic_salary || 0) * effectiveDays / totalWorkingDays : 0,
+        hra: totalWorkingDays > 0 ? hra * effectiveDays / totalWorkingDays : 0,
+        special_allowances: totalWorkingDays > 0 ? Number(salaryStructure.special_allowances || 0) * effectiveDays / totalWorkingDays : 0,
+        bonus: totalWorkingDays > 0 ? Number(salaryStructure.bonus || 0) * effectiveDays / totalWorkingDays : 0,
         net_salary,
         status: userRole === "super_admin" ? "Paid" : "Pending",
-        payment_method: "Bank Transfer", // Adjust based on schema
+        payment_method: "Bank Transfer",
         payment_date: `${month}-01`,
         month,
         created_by: userId,
@@ -440,7 +429,6 @@ const generatePayroll = async (req, res) => {
         total_working_days: totalWorkingDays,
       };
 
-      console.log(`Inserting payroll for employee ${emp.employee_id}:`, payrollData);
       try {
         await queryAsync(
           `INSERT INTO payroll (
@@ -483,7 +471,6 @@ const generatePayroll = async (req, res) => {
       }
 
       if (unpaidLeaveDays > 0 || totalWorkingDays === 0) {
-        console.log(`Inserting audit log for ${emp.employee_id}...`);
         try {
           await queryAsync(
             "INSERT INTO audit_log (action, employee_id, description, performed_by, created_at) VALUES (?, ?, ?, ?, NOW())",

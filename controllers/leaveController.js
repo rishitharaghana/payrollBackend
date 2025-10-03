@@ -204,14 +204,19 @@ const updateLeaveStatus = async (req, res) => {
         const dateStr = d.toISOString().split("T")[0];
         let holidayDates = [];
         try {
-          const holidays = await queryAsync("SELECT date FROM holidays WHERE date = ?", [dateStr]);
-          holidayDates = holidays.map((h) => h.date.toISOString().split("T")[0]);
+          // Fix: Use holiday_date instead of date
+          const holidays = await queryAsync("SELECT holiday_date FROM holidays WHERE holiday_date = ?", [dateStr]);
+          holidayDates = holidays.map((h) => h.holiday_date.toISOString().split("T")[0]);
         } catch (err) {
           console.error("Error querying holidays in updateLeaveStatus:", err.sqlMessage || err.message);
-          await queryAsync(
-            "INSERT INTO cron_logs (job_name, status, message) VALUES (?, ?, ?)",
-            ["updateLeaveStatus", "error", `Failed to query holidays: ${err.sqlMessage || err.message}`]
-          );
+          try {
+            await queryAsync(
+              "INSERT INTO cron_logs (job_name, status, message, executed_at) VALUES (?, ?, ?, NOW())",
+              ["updateLeaveStatus", "error", `Failed to query holidays: ${err.sqlMessage || err.message}`]
+            );
+          } catch (logErr) {
+            console.warn("Failed to log to cron_logs:", logErr.message);
+          }
           holidayDates = [];
         }
         if (holidayDates.length === 0 && d.getDay() !== 0 && d.getDay() !== 6) {
@@ -225,8 +230,16 @@ const updateLeaveStatus = async (req, res) => {
 
     res.json({ message: `Leave ${status.toLowerCase()} successfully`, leave_id });
   } catch (err) {
-    console.error("DB error:", err);
-    res.status(500).json({ error: "Database error", details: err.sqlMessage });
+    console.error("DB error in updateLeaveStatus:", err);
+    try {
+      await queryAsync(
+        "INSERT INTO cron_logs (job_name, status, message, executed_at) VALUES (?, ?, ?, NOW())",
+        ["updateLeaveStatus", "error", `Database error: ${err.sqlMessage || err.message}`]
+      );
+    } catch (logErr) {
+      console.warn("Failed to log to cron_logs:", logErr.message);
+    }
+    res.status(500).json({ error: "Database error", details: err.sqlMessage || err.message });
   }
 };
 

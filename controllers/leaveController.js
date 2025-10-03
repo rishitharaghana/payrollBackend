@@ -10,14 +10,14 @@ const calculateLeaveDays = async (startDate, endDate) => {
 
   let holidayDates = [];
   try {
-    const holidays = await queryAsync("SELECT date FROM holidays WHERE date BETWEEN ? AND ?", [
+    const holidays = await queryAsync("SELECT holiday_date FROM holidays WHERE holiday_date BETWEEN ? AND ?", [
       start.toISOString().split("T")[0],
       end.toISOString().split("T")[0],
     ]);
-    holidayDates = holidays.map((h) => h.date.toISOString().split("T")[0]);
+    holidayDates = holidays.map((h) => h.holiday_date.toISOString().split("T")[0]);
   } catch (err) {
     console.error("Error querying holidays table:", err.sqlMessage || err.message);
-    holidayDates = [];
+    holidayDates = []; // Fallback to no holidays if query fails
   }
 
   let days = 0;

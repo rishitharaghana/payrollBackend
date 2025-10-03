@@ -687,7 +687,6 @@ const createEmployeePersonalDetails = async (req, res) => {
     employerIdName,
     positionTitle,
     employmentType,
-    joinDate,
     contractEndDate,
     pan_number,
     adhar_number,
@@ -773,8 +772,8 @@ const createEmployeePersonalDetails = async (req, res) => {
     if (userRole === "super_admin" && !user) {
       const hashedPassword = await bcrypt.hash(password, 10);
       const employeeQuery = `
-        INSERT INTO hrms_users (employee_id, full_name, email, mobile, password, role, is_temporary_password)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO hrms_users (employee_id, full_name, email, mobile, password, role, is_temporary_password, join_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `;
       const employeeValues = [
         employeeId,
@@ -784,6 +783,7 @@ const createEmployeePersonalDetails = async (req, res) => {
         hashedPassword,
         userRole === "hr" ? "hr" : "employee",
         true,
+        null, // join_date is handled in createEmployee, so we set it to null here
       ];
       await queryAsync(employeeQuery, employeeValues);
     }
@@ -792,8 +792,8 @@ const createEmployeePersonalDetails = async (req, res) => {
       INSERT INTO personal_details (
         employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
         present_address, previous_address, position_type, employer_id_name, position_title,
-        employment_type, join_date, pan_number, adhar_number, contract_end_date, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        employment_type, pan_number, adhar_number, contract_end_date, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const personalValues = [
       finalEmployeeId,
@@ -810,7 +810,6 @@ const createEmployeePersonalDetails = async (req, res) => {
       employerIdName || null,
       positionTitle || null,
       employmentType || null,
-      joinDate || null,
       pan_number || null,
       adhar_number || null,
       contractEndDate || null,
@@ -1028,7 +1027,7 @@ const createDocuments = async (req, res) => {
       res.status(500).json({ error: `Database error: ${err.message}` });
     }
   });
-};
+}; 
 
 const createBankDetails = async (req, res) => {
   const userRole = req.user.role;
@@ -1121,40 +1120,31 @@ const fetchEmployees = async (req, res) => {
 };
 
 const getEmployeeById = async (req, res) => {
-  const userRole = req.user.role;
   const { id } = req.params;
-
-  if (!["super_admin", "hr"].includes(userRole)) {
-    return res
-      .status(403)
-      .json({ error: "Access denied: Insufficient permissions" });
-  }
-
+  const { role, employee_id } = req.user; // From JWT middleware
   try {
-    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+    // Allow access if user is super_admin, hr, or fetching their own data
+    if (!["super_admin", "hr"].includes(role) && employee_id !== id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     const [employee] = await queryAsync(
-      `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, employment_type, join_date, blood_group, gender, dob,
-              CASE WHEN photo_url IS NOT NULL THEN CONCAT(?, photo_url) ELSE NULL END as photo_url,
-              role
-       FROM hrms_users WHERE id = ?`,
-      [baseUrl, id]
+      `SELECT * FROM hrms_users WHERE employee_id = ?`,
+      [id]
     );
-
     if (!employee) {
       return res.status(404).json({ error: "Employee not found" });
     }
-
-    res.json({ message: "Employee fetched successfully", data: employee });
+    res.status(200).json({ message: "Employee fetched successfully", data: employee });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: "Database error" });
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch employee" });
   }
 };
 
 const deleteEmployee = async (req, res) => {
   const userRole = req.user.role;
   const { id } = req.params;
-  const { role, exitType, reason, noticeStartDate, lastWorkingDate, restrictLeaves, exitChecklist } = req.body;
+  const { role, exitType, reason, noticeStartDate, lastWorkingDate, exitChecklist } = req.body;
 
   if (!['super_admin', 'hr'].includes(userRole)) {
     return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
@@ -1168,12 +1158,15 @@ const deleteEmployee = async (req, res) => {
   if (exitType === 'resignation' && (!noticeStartDate || !lastWorkingDate)) {
     return res.status(400).json({ error: 'Notice start and last working dates are required for resignation' });
   }
+  if (exitChecklist && typeof exitChecklist !== 'object') {
+    return res.status(400).json({ error: 'Exit checklist must be a valid JSON object' });
+  }
 
   try {
     await queryAsync('START TRANSACTION');
 
     const [existingRecord] = await queryAsync(
-      `SELECT employee_id, photo_url, join_date, status FROM hrms_users WHERE id = ? AND role = ?`,
+      `SELECT employee_id, full_name, role, status FROM hrms_users WHERE id = ? AND role = ?`,
       [id, role]
     );
     if (!existingRecord) {
@@ -1185,61 +1178,60 @@ const deleteEmployee = async (req, res) => {
       return res.status(400).json({ error: 'Only active employees can be terminated' });
     }
 
+    // Delete related records to resolve dependency issues
     const relatedTables = [
       { table: 'payroll', column: 'employee_id' },
       { table: 'personal_details', column: 'employee_id' },
       { table: 'bank_details', column: 'employee_id' },
       { table: 'education_details', column: 'employee_id' },
       { table: 'documents', column: 'employee_id' },
+      { table: 'leave_balances', column: 'employee_id' },
     ];
+
     for (const { table, column } of relatedTables) {
-      const [records] = await queryAsync(
-        `SELECT ${column} FROM ${table} WHERE ${column} = ?`,
+      await queryAsync(
+        `DELETE FROM ${table} WHERE ${column} = ?`,
         [existingRecord.employee_id]
       );
-      if (records) {
-        await queryAsync('ROLLBACK');
-        return res.status(400).json({
-          error: `Cannot terminate employee with records in ${table}. Archive or resolve dependencies.`,
-        });
-      }
     }
 
-    const status = exitType === 'resignation' ? 'serving_notice' : exitType === 'absconding' ? 'absconded' : 'inactive';
+    // Set status based on exit_type
+    const status = exitType === 'absconding' ? 'absconded' : 'inactive';
+
+    // Move to alumni table
     await queryAsync(
-      `UPDATE hrms_users SET 
-        status = ?, 
-        exit_date = ?, 
-        termination_reason = ?, 
-        notice_start_date = ?, 
-        last_working_date = ?, 
-        restrict_leaves = ?,
-        exit_checklist = ? 
-        WHERE id = ? AND role = ?`,
+      `INSERT INTO alumni (
+        employee_id, full_name, role, status, exit_reason, exit_type, 
+        notice_start_date, last_working_date, exit_checklist
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        existingRecord.employee_id,
+        existingRecord.full_name,
+        existingRecord.role,
         status,
-        exitType === 'resignation' ? null : new Date(),
         reason || null,
+        exitType,
         noticeStartDate || null,
-        lastWorkingDate || null,
-        restrictLeaves || false,
-        JSON.stringify(exitChecklist) || null,
-        id,
-        role,
+        lastWorkingDate || (exitType !== 'resignation' ? new Date() : null),
+        exitChecklist ? JSON.stringify(exitChecklist) : null,
       ]
     );
 
-    await queryAsync(
-      `INSERT INTO audit_log (action, employee_id, performed_by, details, performed_at) VALUES (?, ?, ?, ?, ?)`,
-      [`TERMINATE_EMPLOYEE_${exitType.toUpperCase()}`, existingRecord.employee_id, req.user.employee_id, reason || 'No reason provided', new Date()]
-    );
+    // Delete from hrms_users
+    await queryAsync(`DELETE FROM hrms_users WHERE id = ? AND role = ?`, [id, role]);
 
-    if (restrictLeaves && exitType === 'resignation') {
-      await queryAsync(
-        `UPDATE leave_balances SET leave_application_allowed = false WHERE employee_id = ?`,
-        [existingRecord.employee_id]
-      );
-    }
+    // Log audit with description column
+    await queryAsync(
+      `INSERT INTO audit_log (action, employee_id, performed_by, description, created_at) 
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        `TERMINATE_EMPLOYEE_${exitType.toUpperCase()}`,
+        existingRecord.employee_id,
+        req.user.employee_id,
+        reason || 'No reason provided',
+        new Date(),
+      ]
+    );
 
     await queryAsync('COMMIT');
 
@@ -1247,14 +1239,33 @@ const deleteEmployee = async (req, res) => {
     await sendNotification({
       to: 'it@company.com,finance@company.com',
       subject: `Employee ${exitType.charAt(0).toUpperCase() + exitType.slice(1)}`,
-      message: `Employee ${existingRecord.employee_id} marked as ${status} by ${req.user.employee_id}. Reason: ${reason || 'None'}.`,
+      message: `Employee ${existingRecord.employee_id} terminated by ${req.user.employee_id}. Reason: ${reason || 'None'}.`,
     });
 
-    res.json({ message: `${role} marked as ${status} successfully`, status });
+    res.json({ message: `${role} terminated successfully` });
   } catch (err) {
     await queryAsync('ROLLBACK');
     console.error('DB error:', err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: 'Database error during operation' });
+    res.status(500).json({ error: `Database error during operation: ${err.message}` });
+  }
+};
+const fetchAlumni = async (req, res) => {
+  try {
+    const userRole = req.user.role;
+    if (!['super_admin', 'hr'].includes(userRole)) {
+      return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+    }
+
+    const alumni = await queryAsync(
+      `SELECT 
+         id, employee_id, full_name, role, status, exit_reason, 
+         exit_type, notice_start_date, last_working_date, exit_checklist
+       FROM alumni`
+    );
+    res.json({ message: 'Alumni fetched successfully', data: alumni });
+  } catch (err) {
+    console.error('DB error:', err.message, err.sqlMessage, err.code);
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
@@ -1403,7 +1414,7 @@ const getEmployeePersonalDetails = async (req, res) => {
     const [personalDetails] = await queryAsync(
       `SELECT employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
               present_address, previous_address, position_type, employer_id_name, position_title,
-              employment_type, join_date, contract_end_date, pan_number, adhar_number
+              employment_type, contract_end_date, pan_number, adhar_number
        FROM personal_details WHERE employee_id = ?`,
       [employeeId]
     );
@@ -1422,14 +1433,32 @@ const getEmployeePersonalDetails = async (req, res) => {
 
 const getEmployeeEducationDetails = async (req, res) => {
   const userRole = req.user.role;
+  const userId = req.user.employee_id;
   const { employeeId } = req.params;
 
-  if (userRole !== "super_admin") {
-    return res
-      .status(403)
-      .json({
-        error: "Access denied: Only super_admins can view education details",
-      });
+  if (!employeeId || employeeId === "undefined") {
+    return res.status(400).json({ error: "Employee ID is required and cannot be undefined" });
+  }
+
+  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+
+  if (userRole === "employee" && employeeId !== userId) {
+    return res.status(403).json({ error: "Access denied: You can only view your own education details" });
+  }
+
+  if (userRole === "hr") {
+    const [targetUser] = await queryAsync(
+      `SELECT role FROM hrms_users WHERE employee_id = ?`,
+      [employeeId]
+    );
+    if (!targetUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    if (targetUser.role === "hr") {
+      return res.status(403).json({ error: "Access denied: HR cannot view other HR users' education details" });
+    }
   }
 
   try {
@@ -1459,42 +1488,76 @@ const getEmployeeEducationDetails = async (req, res) => {
     });
   } catch (err) {
     console.error("DB error:", err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
 const getEmployeeDocuments = async (req, res) => {
   const userRole = req.user.role;
+  const userId = req.user.employee_id;
   const { employeeId } = req.params;
 
-  if (userRole !== "super_admin") {
-    return res
-      .status(403)
-      .json({ error: "Access denied: Only super_admins can view documents" });
+  if (!employeeId || employeeId === "undefined") {
+    return res.status(400).json({ error: "Employee ID is required and cannot be undefined" });
+  }
+
+  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+
+  if (userRole === "employee" && employeeId !== userId) {
+    return res.status(403).json({ error: "Access denied: You can only view your own documents" });
+  }
+
+  if (userRole === "hr") {
+    const [targetUser] = await queryAsync(
+      `SELECT role FROM hrms_users WHERE employee_id = ?`,
+      [employeeId]
+    );
+    if (!targetUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    if (targetUser.role === "hr") {
+      return res.status(403).json({ error: "Access denied: HR cannot view other HR users' documents" });
+    }
   }
 
   try {
-    const [user] = await queryAsync(
-      `SELECT employee_id FROM hrms_users WHERE employee_id = ?`,
-      [employeeId]
-    );
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
+    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
     const documents = await queryAsync(
-      `SELECT id, employee_id, document_type, file_path, file_type
+      `SELECT id, employee_id, document_type,
+              CASE
+                WHEN document_type = 'tenth_class' THEN tenth_class_doc_path
+                WHEN document_type = 'intermediate' THEN intermediate_doc_path
+                WHEN document_type = 'graduation' THEN graduation_doc_path
+                WHEN document_type = 'postgraduation' THEN postgraduation_doc_path
+                WHEN document_type = 'aadhar' THEN aadhar_doc_path
+                WHEN document_type = 'pan' THEN pan_doc_path
+                ELSE NULL
+              END AS file_path,
+              created_at,
+              updated_at
        FROM documents WHERE employee_id = ?`,
       [employeeId]
     );
 
+    // Format documents to include full file_path with base URL
+    const formattedDocuments = documents.map(doc => ({
+      id: doc.id,
+      employee_id: doc.employee_id,
+      document_type: doc.document_type,
+      file_path: doc.file_path ? `${baseUrl}${doc.file_path}` : null,
+      created_at: doc.created_at,
+      updated_at: doc.updated_at,
+    }));
+
     res.json({
-      message: "Documents fetched successfully",
-      data: documents,
+      message: documents.length > 0 ? "Documents fetched successfully" : "No documents found",
+      data: formattedDocuments,
     });
   } catch (err) {
     console.error("DB error:", err.message, err.sqlMessage, err.code);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
@@ -1560,7 +1623,6 @@ const updateEmployeePersonalDetails = async (req, res) => {
     employerIdName,
     positionTitle,
     employmentType,
-    joinDate,
     contractEndDate,
     pan_number,
     adhar_number,
@@ -1629,7 +1691,7 @@ const updateEmployeePersonalDetails = async (req, res) => {
       UPDATE personal_details SET
         full_name = ?, father_name = ?, mother_name = ?, phone = ?, alternate_phone = ?, email = ?, gender = ?,
         present_address = ?, previous_address = ?, position_type = ?, employer_id_name = ?, position_title = ?,
-        employment_type = ?, join_date = ?, pan_number = ?, adhar_number = ?, contract_end_date = ?
+        employment_type = ?, pan_number = ?, adhar_number = ?, contract_end_date = ?
       WHERE employee_id = ?
     `;
     const values = [
@@ -1646,11 +1708,9 @@ const updateEmployeePersonalDetails = async (req, res) => {
       employerIdName || null,
       positionTitle || null,
       employmentType || null,
-      joinDate || null,
       pan_number || null,
       adhar_number || null,
       contractEndDate || null,
-      userId,
       employeeId,
     ];
 
@@ -1668,7 +1728,6 @@ const updateEmployeePersonalDetails = async (req, res) => {
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
-
 const updateEducationDetails = async (req, res) => {
   const userRole = req.user.role;
   const userId = req.user.employee_id;
@@ -1839,4 +1898,5 @@ module.exports = {
   updateEducationDetails,
   updateEmployeePersonalDetails,
   createSalaryStructure,
+  fetchAlumni,
 };

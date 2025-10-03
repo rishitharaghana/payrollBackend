@@ -25,7 +25,7 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
   const [year, monthNum] = month.split("-").map(Number);
   const startDate = new Date(year, monthNum - 1, 1);
   const endDate = new Date(year, monthNum, 0);
-  const today = new Date(); // Use actual current date
+  const today = new Date(); 
   const calculationEndDate = today < endDate ? today : endDate;
   const startDateStr = startDate.toISOString().split("T")[0];
   const endDateStr = calculationEndDate.toISOString().split("T")[0];
@@ -33,7 +33,6 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
   try {
     console.log(`Calculating leave and attendance for "${employeeId}" in ${month}...`);
 
-    // Validate employee
     const [employee] = await queryAsync(
       "SELECT join_date, status, role FROM hrms_users WHERE employee_id = ?",
       [employeeId]
@@ -607,6 +606,12 @@ const generatePayrollForEmployee = async (req, res) => {
       [employeeId]
     );
 
+    // Helper function to parse numbers safely
+    const parseNumber = (value, defaultValue = 0) => {
+      const parsed = parseFloat(value);
+      return isNaN(parsed) ? defaultValue : parsed;
+    };
+
     let payrollData;
     if (totalWorkingDays === 0) {
       console.warn(`No working days for ${employeeId} in ${month}. Generating zero payroll.`);
@@ -650,21 +655,54 @@ const generatePayrollForEmployee = async (req, res) => {
         ]
       );
     } else {
-      const hra = salaryStructure.hra || (salaryStructure.hra_percentage * salaryStructure.basic_salary) / 100 || 0;
-      const gross_salary =
-        parseFloat(salaryStructure.basic_salary || 0) +
-        parseFloat(hra || 0) +
-        parseFloat(salaryStructure.special_allowances || 0) +
-        parseFloat(salaryStructure.bonus || 0);
-      const dailyRate = gross_salary / totalWorkingDays;
+      // Parse salary components safely
+      const basic_salary = parseNumber(salaryStructure.basic_salary);
+      const hra_percentage = parseNumber(salaryStructure.hra_percentage);
+      const provident_fund_percentage = parseNumber(salaryStructure.provident_fund_percentage, 0.12);
+      const esic_percentage = parseNumber(salaryStructure.esic_percentage, 0.0075);
+      const hra = parseNumber(salaryStructure.hra) || (hra_percentage * basic_salary) / 100 || 0;
+      const special_allowances = parseNumber(salaryStructure.special_allowances);
+      const bonus = parseNumber(salaryStructure.bonus);
+      const provident_fund = parseNumber(salaryStructure.provident_fund);
+      const esic = parseNumber(salaryStructure.esic);
+
+      const gross_salary = basic_salary + hra + special_allowances + bonus;
+      console.log(`Calculated gross_salary for ${employeeId}:`, gross_salary);
+
+      const dailyRate = totalWorkingDays > 0 ? gross_salary / totalWorkingDays : 0;
       const effectiveWorkingDays = presentDays + paidLeaveDays;
-      const adjustedGrossSalary = effectiveWorkingDays * dailyRate;
+      const adjustedGrossSalary = dailyRate * effectiveWorkingDays;
       const unpaidLeaveDeduction = unpaidLeaveDays * dailyRate;
-      const pf_deduction = salaryStructure.provident_fund || Math.min(adjustedGrossSalary * (salaryStructure.provident_fund_percentage / 100 || 0.12), 1800);
-      const esic_deduction = salaryStructure.esic || (adjustedGrossSalary <= 21000 ? adjustedGrossSalary * (salaryStructure.esic_percentage / 100 || 0.0075) : 0);
+
+      const pf_deduction = provident_fund || Math.min(adjustedGrossSalary * provident_fund_percentage, 1800);
+      const esic_deduction = esic || (adjustedGrossSalary <= 21000 ? adjustedGrossSalary * esic_percentage : 0);
       const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
       const tax_deduction = calculateTax(adjustedGrossSalary);
+
+      // Log intermediate calculations
+      console.log(`Intermediate calculations for ${employeeId}:`, {
+        adjustedGrossSalary,
+        pf_deduction,
+        esic_deduction,
+        professional_tax,
+        tax_deduction,
+        unpaidLeaveDeduction,
+        dailyRate,
+        effectiveWorkingDays
+      });
+
       const net_salary = Math.max(0, adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction));
+
+      if (isNaN(net_salary)) {
+        console.error(`Net salary calculation resulted in NaN for ${employeeId}. Forcing net_salary to 0.`, {
+          adjustedGrossSalary,
+          pf_deduction,
+          esic_deduction,
+          professional_tax,
+          tax_deduction
+        });
+        throw new Error(`Invalid net salary calculation for ${employeeId}`);
+      }
 
       payrollData = {
         employee_id: employeeId,
@@ -677,10 +715,10 @@ const generatePayrollForEmployee = async (req, res) => {
         esic_deduction,
         professional_tax,
         tax_deduction,
-        basic_salary: (parseFloat(salaryStructure.basic_salary) * effectiveWorkingDays / totalWorkingDays) || 0,
-        hra: (parseFloat(hra) * effectiveWorkingDays / totalWorkingDays) || 0,
-        special_allowances: (parseFloat(salaryStructure.special_allowances) * effectiveWorkingDays / totalWorkingDays) || 0,
-        bonus: (parseFloat(salaryStructure.bonus) * effectiveWorkingDays / totalWorkingDays) || 0,
+        basic_salary: totalWorkingDays > 0 ? (basic_salary * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
+        hra: totalWorkingDays > 0 ? (hra * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
+        special_allowances: totalWorkingDays > 0 ? (special_allowances * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
+        bonus: totalWorkingDays > 0 ? (bonus * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
         status: userRole === "super_admin" ? "Paid" : "Pending",
         payment_method: bankDetails ? "Bank Transfer" : "Cash",
         payment_date: new Date(`${month}-01`).toISOString().split("T")[0],

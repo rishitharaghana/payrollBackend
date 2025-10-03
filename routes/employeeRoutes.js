@@ -21,6 +21,7 @@ const {
   updateEducationDetails,
   updateBankDetails,
   createSalaryStructure,
+  fetchAlumni,
 } = require("../controllers/employeeController");
 
 router.post("/employees", authenticateToken, createEmployee);
@@ -30,10 +31,10 @@ router.post('/employees/documents', authenticateToken, createDocuments)
 router.post('/employees/bank-details', authenticateToken, createBankDetails);
 router.get("/employees", authenticateToken, fetchEmployees);
 router.put("/employees/:id", authenticateToken, updateEmployee);
-router.delete("/employees/:id/terminate", authenticateToken, deleteEmployee);
+router.post("/employees/:id/terminate", authenticateToken, deleteEmployee);
 router.get("/profile", authenticateToken, getCurrentUserProfile);
 router.get('/employees/progress', authenticateToken, getEmployeeProgress);
-router.get('/employee/:id', authenticateToken, getEmployeeById);
+router.get('/employees/:id', authenticateToken, getEmployeeById);
 router.get('/employees/personal-details/:employeeId', authenticateToken, getEmployeePersonalDetails);
 router.get('/employees/bank-details/:employeeId', authenticateToken, getEmployeeBankDetails);
 router.get('/employees/documents/:employeeId', authenticateToken, getEmployeeDocuments);
@@ -41,6 +42,7 @@ router.get('/employees/education-details/:employeeId', authenticateToken, getEmp
 router.put('/employees/personal-details/:employeeId', authenticateToken, updateEmployeePersonalDetails);
 router.put('/employees/education-details/:employeeId', authenticateToken, updateEducationDetails);
 router.put('/employees/bank-details/:employeeId', authenticateToken, updateBankDetails);
-router.post('/employees/salary', authenticateToken, createSalaryStructure)
+router.post('/employees/salary', authenticateToken, createSalaryStructure);
+router.get('/employees/alumni', authenticateToken, fetchAlumni);
 
 module.exports = router;

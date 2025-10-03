@@ -312,28 +312,33 @@ const getLeaves = async (req, res) => {
     const query = `
       SELECT l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
              l.status, l.approved_by, l.approved_at, l.total_days,
-             MAX(u.full_name) AS employee_name,
-             MAX(u.department_name) AS department,
-             GROUP_CONCAT(COALESCE(u_rec.full_name, 'Unknown')) AS recipient_names
+             COALESCE(u.full_name, 'Unknown') AS employee_name,
+             COALESCE(u.department_name, 'N/A') AS department,
+             GROUP_CONCAT(COALESCE(u_rec.full_name, 'Pending')) AS recipient_names
       FROM leaves l
-      LEFT JOIN leave_recipients lr ON l.id = lr.leave_id
       LEFT JOIN hrms_users u ON l.employee_id = u.employee_id
-      LEFT JOIN hrms_users u_rec ON lr.recipient_id = u_rec.employee_id AND u_rec.role = 'hr'
+      LEFT JOIN leave_recipients lr ON l.id = lr.leave_id
+      LEFT JOIN hrms_users u_rec ON lr.recipient_id = u_rec.employee_id
       WHERE l.employee_id = ?
-      GROUP BY l.id, l.employee_id, l.start_date, l.end_date, l.reason, l.leave_type, 
-               l.status, l.approved_by, l.approved_at, l.total_days
+      GROUP BY l.id, l.employee_id, l.start_date, l.end_date, l.reason, 
+               l.leave_type, l.status, l.approved_by, l.approved_at, l.total_days
     `;
     const rows = await queryAsync(query, [employee_id]);
-    rows.forEach((row) => {
-      row.recipients = row.recipient_names ? row.recipient_names.split(",") : [];
-      delete row.recipient_names;
-    });
-    res.json(rows);
+
+    const result = rows.map((row) => ({
+      ...row,
+      recipients: row.recipient_names ? row.recipient_names.split(",") : ["Pending"],
+      recipient_names: undefined,
+    }));
+
+    console.log("Fetched leaves:", result);
+    res.json(result);
   } catch (err) {
-    console.error("DB error:", err);
+    console.error("DB error in getLeaves:", err);
     res.status(500).json({ error: "Database error", details: err.sqlMessage });
   }
 };
+
 
 const getRecipientOptions = async (req, res) => {
   const { role } = req.user;

@@ -277,6 +277,7 @@ const getPendingLeaves = async (req, res) => {
   }
 };
 
+
 const getAllLeaves = async (req, res) => {
   const { employee_id, role } = req.user;
   try {

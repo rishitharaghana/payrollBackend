@@ -264,23 +264,44 @@ const getEmployeeAverageWorkingHours = async (req, res) => {
   const { employeeId } = req.params;
   const { start_date, end_date } = req.query;
 
-  if (!['super_admin', 'hr', 'employee'].includes(role)) {
+  // Allow dept_head and manager to view their own data
+  const allowedRoles = ['super_admin', 'hr', 'employee', 'dept_head', 'manager'];
+  if (!allowedRoles.includes(role)) {
     return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
   }
 
-  if (role === 'employee') {
+  try {
+    // Validate that the user can access the requested employee_id
     const [user] = await queryAsync(
-      `SELECT employee_id FROM hrms_users WHERE id = ? AND role = ?`,
-      [id, 'employee']
+      `SELECT employee_id, department_name FROM hrms_users WHERE id = ? AND role = ?`,
+      [id, role]
     );
-    if (!user || user.employee_id !== employeeId) {
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Restrict employee and dept_head to their own data
+    if (['employee', 'dept_head', 'manager'].includes(role) && user.employee_id !== employeeId) {
       return res.status(403).json({
         error: 'Access denied: You can only view your own working hours',
       });
     }
-  }
 
-  try {
+    // If dept_head, optionally allow department-wide access (if applicable)
+    if (role === 'dept_head') {
+      const [targetEmployee] = await queryAsync(
+        `SELECT department_name FROM hrms_users WHERE employee_id = ?`,
+        [employeeId]
+      );
+      if (!targetEmployee) {
+        return res.status(404).json({ error: 'Target employee not found' });
+      }
+      // Optional: Allow dept_head to view department members' data
+      // if (targetEmployee.department_name !== user.department_name) {
+      //   return res.status(403).json({ error: 'Access denied: Employee not in your department' });
+      // }
+    }
+
     const [employee] = await queryAsync(
       `SELECT full_name AS employee_name
        FROM hrms_users

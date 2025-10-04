@@ -1314,6 +1314,7 @@ const getCurrentUserProfile = async (req, res) => {
         dob: user.dob,
         join_date: user.join_date,
         photo_url: user.photo_url,
+         role: user.role, 
       },
     });
   } catch (err) {

@@ -289,13 +289,15 @@ const generatePayslip = async (req, res) => {
   try {
     validateInput(employeeId, month);
 
-    if (role === "employee" && employeeId !== employee_id) {
+    // Allow employee, dept_head, manager, and hr to view only their own payslips
+    if (["employee", "dept_head", "manager", "hr"].includes(role) && employeeId !== employee_id) {
       return res
         .status(403)
         .json({ error: "Access denied: You can only view your own payslip" });
     }
 
-    if (!["super_admin", "hr", "employee", "dept_head"].includes(role)) {
+    // Allow super_admin, hr, employee, dept_head, and manager roles
+    if (!["super_admin", "hr", "employee", "dept_head", "manager"].includes(role)) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -422,9 +424,7 @@ const generatePayslip = async (req, res) => {
 
     const logoPath = path.join(__dirname, "../public/images/company_logo.png");
     if (fs.existsSync(logoPath)) {
-      doc.image(logoPath, 40, 30
-
-, { width: 80, height: 40 });
+      doc.image(logoPath, 40, 30, { width: 80, height: 40 });
     } else {
       console.warn(`Logo file not found at ${logoPath}`);
     }
@@ -622,14 +622,30 @@ const generatePayslip = async (req, res) => {
 
 const getPayslips = async (req, res) => {
   const { role, employee_id } = req.user;
-  const { page = 1, limit = 10, month } = req.query;
+  const { page = 1, limit = 10, month, employeeId } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   try {
+    // Validate requesting employee
+    const [requestingEmployee] = await queryAsync(
+      `SELECT employee_id, role, status FROM hrms_users WHERE employee_id = ?`,
+      [employee_id]
+    );
+    if (!requestingEmployee) {
+      console.error(`Requesting employee "${employee_id}" not found in hrms_users`);
+      return res.status(404).json({ error: `Requesting employee ${employee_id} not found` });
+    }
+    if (requestingEmployee.status !== "active") {
+      console.warn(`Requesting employee "${employee_id}" is not active (status: ${requestingEmployee.status})`);
+      return res.status(400).json({ error: `Requesting employee is not active` });
+    }
+
     let query = `
       SELECT p.employee_id, p.month, u.full_name as employee, COALESCE(u.department_name, 'HR') as department, 
              u.designation_name, u.role, p.net_salary as salary, p.status,
-             p.payment_date, p.unpaid_leave_days, p.total_working_days
+             p.payment_date, p.unpaid_leave_days, p.total_working_days,
+             p.basic_salary, p.hra, p.special_allowances, p.bonus,
+             p.pf_deduction, p.esic_deduction, p.professional_tax, p.tax_deduction
       FROM payroll p
       JOIN hrms_users u ON p.employee_id = u.employee_id
     `;
@@ -641,19 +657,35 @@ const getPayslips = async (req, res) => {
     let params = [];
     let countParams = [];
 
-    if (role === "employee") {
+    // Role-based access control
+    if (!["super_admin", "hr"].includes(role)) {
+      // Restrict to own payslips for employee, dept_head, manager
       query += " WHERE p.employee_id = ?";
       countQuery += " WHERE p.employee_id = ?";
       params.push(employee_id);
       countParams.push(employee_id);
-    } else if (!["super_admin", "hr"].includes(role)) {
-      return res.status(403).json({ error: "Access denied" });
+    } else if (role === "hr" && employeeId) {
+      // HR can view specific employee's payslips, except other HR users
+      const [targetEmployee] = await queryAsync(
+        `SELECT role FROM hrms_users WHERE employee_id = ?`,
+        [employeeId]
+      );
+      if (targetEmployee?.role === "hr") {
+        console.warn(`HR user ${employee_id} attempted to view payslip of another HR user ${employeeId}`);
+        return res.status(403).json({ error: "HR users cannot view payslips of other HR users" });
+      }
+      query += " WHERE p.employee_id = ?";
+      countQuery += " WHERE p.employee_id = ?";
+      params.push(employeeId);
+      countParams.push(employeeId);
     }
 
     if (month) {
-      validateInput(employee_id, month);
-      query += role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
-      countQuery += role === "employee" ? " AND p.month = ?" : " WHERE p.month = ?";
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+        throw new Error("Invalid month format. Use YYYY-MM");
+      }
+      query += params.length ? " AND p.month = ?" : " WHERE p.month = ?";
+      countQuery += countParams.length ? " AND p.month = ?" : " WHERE p.month = ?";
       params.push(month);
       countParams.push(month);
     }
@@ -661,17 +693,30 @@ const getPayslips = async (req, res) => {
     query += " ORDER BY p.month DESC, u.full_name LIMIT ? OFFSET ?";
     params.push(parseInt(limit), offset);
 
-    console.log(`Executing getPayslips query: ${query}`, params);
+    console.log(`Executing getPayslips query:`, query, params);
     const [payslips, [{ total }]] = await Promise.all([
       queryAsync(query, params),
       queryAsync(countQuery, countParams),
     ]);
 
     payslips.forEach((payslip) => {
-      payslip.salary = parseNumber(payslip.salary);
+      payslip.salary = parseFloat(payslip.salary) || 0;
+      // Ensure numerical fields are parsed
+      [
+        "basic_salary",
+        "hra",
+        "special_allowances",
+        "bonus",
+        "pf_deduction",
+        "esic_deduction",
+        "professional_tax",
+        "tax_deduction",
+      ].forEach((field) => {
+        payslip[field] = parseFloat(payslip[field]) || 0;
+      });
     });
 
-    console.log(`Fetched ${payslips.length} payslips, total records: ${total}`);
+    console.log(`Fetched ${payslips.length} payslips, total: ${total}`);
     res.json({
       message: "Payslips fetched successfully",
       data: payslips,
@@ -679,7 +724,7 @@ const getPayslips = async (req, res) => {
     });
   } catch (error) {
     console.error(`Error fetching payslips:`, error.message, error.sqlMessage);
-    res.status(500).json({
+    res.status(error.message.includes("not found") ? 404 : 400).json({
       error: "Error fetching payslips",
       details: error.sqlMessage || error.message,
     });

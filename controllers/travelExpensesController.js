@@ -74,9 +74,15 @@ const submitTravelExpense = async (req, res) => {
 
       const [user] = await queryAsync("SELECT employee_id, role FROM hrms_users WHERE id = ?", [id]);
       console.log("Fetched user:", user);
-      if (!user || (user.employee_id !== stringEmployeeId && !["super_admin", "hr"].includes(role))) {
+      if (!user || (user.employee_id !== stringEmployeeId && !["super_admin", "hr", "dept_head"].includes(role))) {
         if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
         return res.status(403).json({ error: "Unauthorized to submit for this employee" });
+      }
+
+      // Additional check for dept_head: they can only submit for themselves
+      if (role === "dept_head" && user.employee_id !== stringEmployeeId) {
+        if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
+        return res.status(403).json({ error: "Department heads can only submit travel expenses for themselves" });
       }
 
       let parsedExpenses;
@@ -118,7 +124,7 @@ const submitTravelExpense = async (req, res) => {
       }
 
       const status = ["hr", "super_admin"].includes(role) ? "Approved" : "Pending";
-      const submitted_to = role === "employee" ? "hr" : "super_admin";
+      const submitted_to = role === "employee" || role === "dept_head" ? "hr" : "super_admin";
 
       await queryAsync("START TRANSACTION");
 
@@ -467,51 +473,44 @@ const fetchTravelExpenseById = async (req, res) => {
 };
 
 const updateTravelExpenseStatus = async (req, res) => {
-  const { role, id } = req.user;
-  const { id: travelExpenseId } = req.params;
-  const { status, admin_comment } = req.body;
+  const { id, status, admin_comment } = req.body;
+  const userRole = req.user.role;
+  const userId = req.user.employee_id;
+  const departmentName = req.user.department_name;
 
-  if (!["super_admin", "hr"].includes(role)) {
-    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  if (!["hr", "super_admin", "dept_head"].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied" });
   }
-
-  if (!["Approved", "Rejected"].includes(status)) {
-    return res.status(400).json({ error: "Invalid status. Must be 'Approved' or 'Rejected'" });
+  if (!id || !status || !["Approved", "Rejected"].includes(status)) {
+    return res.status(400).json({ error: "Invalid submission ID or status" });
   }
 
   try {
-    const [submission] = await queryAsync("SELECT * FROM travel_expenses WHERE id = ?", [travelExpenseId]);
-    console.log("Fetched submission:", submission);
+    const [submission] = await queryAsync(
+      `SELECT te.*, u.department_name 
+       FROM travel_expenses te
+       JOIN hrms_users u ON te.employee_id = u.employee_id
+       WHERE te.id = ? AND te.status = 'Pending'`,
+      [id]
+    );
     if (!submission) {
-      return res.status(404).json({ error: "Submission not found" });
+      return res.status(404).json({ error: "Submission not found or not pending" });
     }
-
-    if (submission.status !== "Pending") {
-      return res.status(400).json({ error: "Only pending records can be updated" });
-    }
-
-    const [user] = await queryAsync("SELECT employee_id FROM hrms_users WHERE id = ?", [id]);
-    console.log("Fetched user:", user);
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
+    if (userRole === "dept_head" && submission.department_name !== departmentName) {
+      return res.status(403).json({ error: "Access denied: Not your department" });
     }
 
     await queryAsync(
-      `
-      UPDATE travel_expenses 
-      SET status = ?, approved_by = ?, admin_comment = ?, updated_at = NOW() 
-      WHERE id = ?
-      `,
-      [status, user.employee_id, admin_comment || null, travelExpenseId]
+      `UPDATE travel_expenses 
+       SET status = ?, admin_comment = ?, updated_by = ?, updated_at = NOW()
+       WHERE id = ?`,
+      [status, admin_comment || null, userId, id]
     );
 
-    res.status(200).json({
-      message: `Submission ${status.toLowerCase()} successfully`,
-      data: { id: travelExpenseId, status, admin_comment: admin_comment || null },
-    });
-  } catch (error) {
-    console.error("Update error:", error.message, error.sqlMessage, error.code);
-    res.status(500).json({ error: "Failed to update submission" });
+    res.json({ message: `Travel expense ${status.toLowerCase()} successfully` });
+  } catch (err) {
+    console.error("DB error:", err.message);
+    res.status(500).json({ error: "Database error" });
   }
 };
 

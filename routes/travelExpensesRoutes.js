@@ -5,9 +5,9 @@ const router = express.Router();
 
 router.post('/travel-expenses', authenticateToken,  submitTravelExpense);
 router.get('/travel-expenses', authenticateToken, fetchTravelExpenses);
+router.get('/travel-expenses/history', authenticateToken, fetchTravelExpenseHistory)
 router.put('/travel-expenses/:id', authenticateToken, updateTravelExpenseStatus);
 router.get('/travel-expenses/download/:id/', authenticateToken, downloadReceipt);
 router.get('/travel-expenses/:id', authenticateToken, fetchTravelExpenseById);
-router.get('/travel-expenses/history', authenticateToken, fetchTravelExpenseHistory)
 
 module.exports = router;    

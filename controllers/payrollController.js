@@ -24,11 +24,9 @@ const formatCurrency = (value) => {
 const calculateLeaveAndAttendance = async (employeeId, month) => {
   const [year, monthNum] = month.split("-").map(Number);
   const startDate = new Date(year, monthNum - 1, 1);
-  const endDate = new Date(year, monthNum, 0);
-  const today = new Date(); 
-  const calculationEndDate = today < endDate ? today : endDate;
+  const endDate = new Date(year, monthNum, 0); // Full month end date
   const startDateStr = startDate.toISOString().split("T")[0];
-  const endDateStr = calculationEndDate.toISOString().split("T")[0];
+  const endDateStr = endDate.toISOString().split("T")[0];
 
   try {
     console.log(`Calculating leave and attendance for "${employeeId}" in ${month}...`);
@@ -52,7 +50,6 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
       };
     }
 
-    // Check join_date
     const joinDate = employee.join_date ? new Date(employee.join_date) : null;
     if (!joinDate && ["employee", "manager"].includes(employee.role)) {
       console.error(`Missing join_date for employee ${employeeId} with role ${employee.role}`);
@@ -67,7 +64,11 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
         "SELECT holiday_date FROM holidays WHERE holiday_date BETWEEN ? AND ?",
         [startDateStr, endDateStr]
       );
-      holidayDates = holidays.map((h) => h.holiday_date.toISOString().split("T")[0]);
+      holidayDates = holidays.map((h) =>
+        h.holiday_date instanceof Date
+          ? h.holiday_date.toISOString().split("T")[0]
+          : h.holiday_date
+      );
       console.log(`Holidays for ${month}:`, holidayDates);
     } catch (err) {
       console.error(`Error querying holidays for ${month}:`, err.sqlMessage || err.message);
@@ -88,8 +89,26 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
     let unpaidLeaveDays = 0;
     let leaveDetails = [];
     for (const leave of leaves) {
-      const start = new Date(Math.max(new Date(leave.start_date), effectiveStartDate));
-      const end = new Date(Math.min(new Date(leave.end_date), calculationEndDate));
+      const start = new Date(
+        Math.max(
+          new Date(
+            leave.start_date instanceof Date
+              ? leave.start_date
+              : new Date(leave.start_date)
+          ),
+          effectiveStartDate
+        )
+      );
+      const end = new Date(
+        Math.min(
+          new Date(
+            leave.end_date instanceof Date
+              ? leave.end_date
+              : new Date(leave.end_date)
+          ),
+          endDate
+        )
+      );
       let days = 0;
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         const dateStr = d.toISOString().split("T")[0];
@@ -107,8 +126,12 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
       leaveDetails.push({
         type: leave.leave_type,
         days,
-        start_date: leave.start_date,
-        end_date: leave.end_date,
+        start_date: leave.start_date instanceof Date
+          ? leave.start_date.toISOString().split("T")[0]
+          : leave.start_date,
+        end_date: leave.end_date instanceof Date
+          ? leave.end_date.toISOString().split("T")[0]
+          : leave.end_date,
         status: leave.leave_status,
       });
     }
@@ -122,12 +145,33 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
        AND login_time IS NOT NULL`,
       [employeeId, effectiveStartDate.toISOString().split("T")[0], endDateStr]
     );
-    const presentDays = attendance.length; // Count approved attendance records
-    console.log(`Attendance for ${employeeId} in ${month}:`, attendance);
+    const validAttendance = attendance.filter((a) => a.date && (typeof a.date === "string" || a.date instanceof Date));
+    if (attendance.length !== validAttendance.length) {
+      console.warn(
+        `Filtered out ${attendance.length - validAttendance.length} invalid attendance records for ${employeeId}`
+      );
+    }
+    const presentDays = validAttendance.length;
+    console.log(`Attendance for ${employeeId} in ${month}:`, validAttendance);
 
-    // Calculate total working days
+    // Convert attendance dates to string format
+    const attendanceDates = validAttendance.map((a) => {
+      const date = a.date instanceof Date ? a.date.toISOString().split("T")[0] : a.date;
+      if (!date || typeof date !== "string") {
+        console.warn(`Invalid date format for attendance record:`, a);
+        return null;
+      }
+      return date;
+    }).filter((date) => date !== null);
+    console.log(`Processed attendance dates for ${employeeId}:`, attendanceDates);
+
+    // Calculate total working days for the full month
     let totalWorkingDays = 0;
-    for (let d = new Date(effectiveStartDate); d <= calculationEndDate; d.setDate(d.getDate() + 1)) {
+    for (
+      let d = new Date(effectiveStartDate);
+      d <= endDate; // Use full month end date
+      d.setDate(d.getDate() + 1)
+    ) {
       const dateStr = d.toISOString().split("T")[0];
       const isHoliday = holidayDates.includes(dateStr);
       const isWeekend = d.getDay() === 0 || d.getDay() === 6;
@@ -136,21 +180,28 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
       }
     }
 
-    // Fallback: If no attendance records, assume present for all non-holiday/non-leave days
-    const attendanceDates = attendance.map((a) => a.date.split("T")[0]);
-    const leaveDates = leaveDetails.map((l) => l.start_date.split("T")[0]);
-    let effectivePresentDays = presentDays;
-    if (presentDays === 0 && totalWorkingDays > 0) {
-      effectivePresentDays = totalWorkingDays - paidLeaveDays - unpaidLeaveDays - holidayDates.length;
-      effectivePresentDays = Math.max(0, effectivePresentDays); // Prevent negative
-      console.log(`No attendance for ${employeeId}. Assuming ${effectivePresentDays} present days.`);
+    // Calculate unaccounted days as unpaid absences
+    const accountedDays = presentDays + paidLeaveDays + unpaidLeaveDays + holidayDates.length;
+    const unaccountedDays = Math.max(0, totalWorkingDays - accountedDays);
+    if (unaccountedDays > 0) {
+      console.warn(
+        `Unaccounted days for ${employeeId} in ${month}: ${unaccountedDays}. Treating as unpaid absences.`
+      );
+      unpaidLeaveDays += unaccountedDays;
+      leaveDetails.push({
+        type: "Unaccounted Absence",
+        days: unaccountedDays,
+        start_date: null,
+        end_date: null,
+        status: "Unpaid",
+      });
     }
 
     const result = {
       paidLeaveDays,
       unpaidLeaveDays,
       leaveDetails,
-      presentDays: effectivePresentDays,
+      presentDays,
       holidays: holidayDates.length,
       totalWorkingDays,
     };
@@ -158,8 +209,14 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
     console.log(`Result for ${employeeId}, ${month}:`, result);
     return result;
   } catch (err) {
-    console.error(`Error in calculateLeaveAndAttendance for ${employeeId}, ${month}:`, err.message, err.sqlMessage);
-    throw new Error(`Failed to calculate leave and attendance: ${err.sqlMessage || err.message}`);
+    console.error(
+      `Error in calculateLeaveAndAttendance for ${employeeId}, ${month}:`,
+      err.message,
+      err.sqlMessage
+    );
+    throw new Error(
+      `Failed to calculate leave and attendance: ${err.sqlMessage || err.message}`
+    );
   }
 };
 

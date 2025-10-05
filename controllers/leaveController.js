@@ -416,12 +416,13 @@ const allocateMonthlyLeaves = async (req = {}, res = null) => {
     const currentYear = req.body?.year || new Date().getFullYear();
     const currentMonth = req.body?.month || new Date().getMonth() + 1;
     const currentTime = new Date().toISOString().slice(0, 19).replace("T", " ");
-    const leaveType = "paid"; 
-    const monthlyAllocation = 1; 
+    const leaveType = "paid";
+    const monthlyAllocation = 1;
     const maxBalance = 12;
 
     console.log(`allocateMonthlyLeaves - Year: ${currentYear}, Month: ${currentMonth}`);
 
+    // Validate year and month
     if (!Number.isInteger(currentYear) || !Number.isInteger(currentMonth) || currentMonth < 1 || currentMonth > 12) {
       const errorMessage = "Invalid year or month provided";
       await queryAsync(
@@ -432,24 +433,25 @@ const allocateMonthlyLeaves = async (req = {}, res = null) => {
       throw new Error(errorMessage);
     }
 
+    // Check for prior allocation
     const lastAllocation = await queryAsync(
       "SELECT id, status, message FROM cron_logs WHERE job_name = ? AND YEAR(executed_at) = ? AND MONTH(executed_at) = ?",
       ["allocateMonthlyLeaves", currentYear, currentMonth]
     );
     if (lastAllocation.length > 0) {
-      // Shorten the error message for the frontend
       const message = `Leave allocation for ${currentYear}-${currentMonth} already completed`;
       console.log(`allocateMonthlyLeaves - ${message}`);
       if (res) return res.status(400).json({ error: message });
       return { message };
     }
 
+    // Fetch eligible users
     const employees = await queryAsync(
-      "SELECT employee_id FROM hrms_users WHERE role IN ('employee', 'hr', 'dept_head', 'manager') AND status = 'active'"
+      "SELECT employee_id, role FROM hrms_users WHERE role IN ('employee', 'hr', 'dept_head', 'manager') AND status = 'active'"
     );
 
     if (!employees.length) {
-      const message = "No active employees found for leave allocation";
+      const message = "No active employees, HR, managers, or department heads found for leave allocation";
       console.log(message);
       await queryAsync(
         "INSERT INTO cron_logs (job_name, status, message, executed_at) VALUES (?, ?, ?, ?)",
@@ -462,7 +464,7 @@ const allocateMonthlyLeaves = async (req = {}, res = null) => {
     let allocatedCount = 0;
     let failedEmployees = [];
     for (const employee of employees) {
-      const { employee_id } = employee;
+      const { employee_id, role } = employee;
       try {
         const existingBalance = await queryAsync(
           "SELECT balance FROM leave_balances WHERE employee_id = ? AND leave_type = ? AND year = ?",
@@ -474,35 +476,33 @@ const allocateMonthlyLeaves = async (req = {}, res = null) => {
             "UPDATE leave_balances SET balance = LEAST(balance + ?, ?), updated_at = ? WHERE employee_id = ? AND leave_type = ? AND year = ?",
             [monthlyAllocation, maxBalance, currentTime, employee_id, leaveType, currentYear]
           );
-          console.log(`Allocated ${monthlyAllocation} ${leaveType} leave for employee ${employee_id}`);
+          console.log(`Allocated ${monthlyAllocation} ${leaveType} leave for ${role} ${employee_id}`);
           allocatedCount++;
         } else {
           await queryAsync(
             "INSERT INTO leave_balances (employee_id, leave_type, year, balance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
             [employee_id, leaveType, currentYear, monthlyAllocation, currentTime, currentTime]
           );
-          console.log(`Initialized ${leaveType} leave with ${monthlyAllocation} for employee ${employee_id}`);
+          console.log(`Initialized ${leaveType} leave with ${monthlyAllocation} for ${role} ${employee_id}`);
           allocatedCount++;
         }
       } catch (err) {
-        console.error(`Failed to allocate leave for employee ${employee_id}:`, err);
-        failedEmployees.push({ employee_id, error: err.sqlMessage || err.message });
+        console.error(`Failed to allocate leave for ${role} ${employee_id}:`, err);
+        failedEmployees.push({ employee_id, role, error: err.sqlMessage || err.message });
       }
     }
 
     if (allocatedCount === 0) {
-      const errorMessage = `Failed to allocate leaves for ${currentYear}-${currentMonth}: No employees allocated. Errors: ${JSON.stringify(failedEmployees)}`;
+      const errorMessage = `Failed to allocate leaves for ${currentYear}-${currentMonth}: No allocations succeeded. Errors: ${JSON.stringify(failedEmployees)}`;
       await queryAsync(
         "INSERT INTO cron_logs (job_name, status, message, executed_at) VALUES (?, ?, ?, ?)",
         ["allocateMonthlyLeaves", "failed", errorMessage, currentTime]
       );
-      if (res) {
-        return res.status(500).json({ error: "Failed to allocate monthly leaves", details: errorMessage });
-      }
+      if (res) return res.status(500).json({ error: "Failed to allocate monthly leaves", details: errorMessage });
       throw new Error(errorMessage);
     }
 
-    const message = `Monthly leave allocation for ${currentYear}-${currentMonth} completed successfully. Allocated for ${allocatedCount} employees.${
+    const message = `Monthly leave allocation for ${currentYear}-${currentMonth} completed. Allocated for ${allocatedCount} users.${
       failedEmployees.length > 0 ? ` Failed for: ${JSON.stringify(failedEmployees)}` : ""
     }`;
     await queryAsync(
@@ -514,14 +514,12 @@ const allocateMonthlyLeaves = async (req = {}, res = null) => {
     return { message };
   } catch (err) {
     console.error("Error in allocateMonthlyLeaves:", err);
-    const errorMessage = `Failed to allocate leaves for ${currentYear}-${currentMonth}`;
+    const errorMessage = `Failed to allocate leaves for ${req.body?.year || new Date().getFullYear()}-${req.body?.month || new Date().getMonth() + 1}`;
     await queryAsync(
       "INSERT INTO cron_logs (job_name, status, message, executed_at) VALUES (?, ?, ?, ?)",
       ["allocateMonthlyLeaves", "failed", errorMessage, currentTime]
     );
-    if (res) {
-      res.status(500).json({ error: errorMessage, details: err.sqlMessage || err.message });
-    }
+    if (res) return res.status(500).json({ error: errorMessage, details: err.sqlMessage || err.message });
     throw err;
   }
 };

@@ -29,6 +29,7 @@ router.post('/employees/personal-details', authenticateToken, createEmployeePers
 router.post('/employees/education-details', authenticateToken, createEducationDetails);
 router.post('/employees/documents', authenticateToken, createDocuments)
 router.post('/employees/bank-details', authenticateToken, createBankDetails);
+router.get('/employees/alumni', authenticateToken, fetchAlumni);
 router.get("/employees", authenticateToken, fetchEmployees);
 router.put("/employees/:id", authenticateToken, updateEmployee);
 router.post("/employees/:id/terminate", authenticateToken, deleteEmployee);
@@ -43,6 +44,5 @@ router.put('/employees/personal-details/:employeeId', authenticateToken, updateE
 router.put('/employees/education-details/:employeeId', authenticateToken, updateEducationDetails);
 router.put('/employees/bank-details/:employeeId', authenticateToken, updateBankDetails);
 router.post('/employees/salary', authenticateToken, createSalaryStructure);
-router.get('/employees/alumni', authenticateToken, fetchAlumni);
 
 module.exports = router;

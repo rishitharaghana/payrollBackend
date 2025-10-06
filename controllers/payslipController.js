@@ -96,7 +96,7 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
       return null;
     }
 
-    const { unpaidLeaveDays, totalWorkingDays, presentDays, paidLeaveDays, holidays } = await calculateLeaveAndAttendance(employeeId, month);
+    const { unpaidLeaveDays, totalWorkingDays, presentDays, paidLeaveDays, holidays, unaccountedWorkingDays } = await calculateLeaveAndAttendance(employeeId, month);
 
     if (totalWorkingDays === 0) {
       console.warn(`No working days for "${employeeId}" in ${month}. Skipping payroll generation.`);
@@ -118,32 +118,32 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
     const provident_fund = parseNumber(salaryStructure.provident_fund);
     const esic = parseNumber(salaryStructure.esic);
 
-    const gross_salary = basic_salary + hra + special_allowances + bonus;
+    const gross_salary = basic_salary + hra + special_allowances + bonus; // Full gross
     console.log(`Calculated gross_salary for ${employeeId}:`, gross_salary);
 
+    const effectiveWorkingDays = presentDays + paidLeaveDays + unaccountedWorkingDays;
     const dailyRate = totalWorkingDays > 0 ? gross_salary / totalWorkingDays : 0;
-    const effectiveWorkingDays = presentDays + paidLeaveDays;
-    const adjusted_gross_salary = effectiveWorkingDays * dailyRate;
-    const unpaid_leave_deduction = unpaidLeaveDays * dailyRate;
+    const unpaidLeaveDeduction = unpaidLeaveDays * dailyRate;
+    const adjustedGrossSalary = gross_salary - unpaidLeaveDeduction; // Equivalent to effectiveWorkingDays * dailyRate
 
-    const pf_deduction = provident_fund || Math.min(adjusted_gross_salary * provident_fund_percentage, 1800);
-    const esic_deduction = esic || (adjusted_gross_salary <= 21000 ? adjusted_gross_salary * esic_percentage : 0);
-    const professional_tax = adjusted_gross_salary <= 15000 ? 0 : 200;
-    const tax_deduction = calculateTax(adjusted_gross_salary);
+    const pf_deduction = provident_fund || Math.min(adjustedGrossSalary * provident_fund_percentage, 1800);
+    const esic_deduction = esic || (adjustedGrossSalary <= 21000 ? adjustedGrossSalary * esic_percentage : 0);
+    const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
+    const tax_deduction = calculateTax(adjustedGrossSalary);
 
-    const net_salary = Math.max(0, adjusted_gross_salary - (pf_deduction + esic_deduction + professional_tax + tax_deduction + unpaid_leave_deduction));
+    const net_salary = Math.max(0, adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction)); // No double subtraction of unpaid
 
     if (isNaN(net_salary)) {
       console.error(`Net salary calculation resulted in NaN for ${employeeId}:`, {
-        adjusted_gross_salary,
+        adjustedGrossSalary,
         pf_deduction,
         esic_deduction,
         professional_tax,
         tax_deduction,
-        unpaid_leave_deduction,
+        unpaidLeaveDeduction,
       });
       await queryAsync(
-        "INSERT INTO payroll_audit (employee_id, month, action, details, created_at) VALUES (?, ?, ?, ?, NOW())",
+        "INSERT INTO audit_log (employee_id, month, action, details, created_at) VALUES (?, ?, ?, ?, NOW())",
         [employeeId, month, "calculation_error", `Net salary calculation resulted in NaN`]
       );
       throw new Error(`Invalid net salary calculation for ${employeeId}`);
@@ -154,17 +154,17 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
       employee_name: employee.full_name,
       department: employee.department_name || "HR",
       designation_name: employee.designation_name || null,
-      gross_salary: adjusted_gross_salary,
+      gross_salary: gross_salary, // Full gross
       net_salary,
       pf_deduction,
       esic_deduction,
       professional_tax,
       tax_deduction,
-      unpaid_leave_deduction,
-      basic_salary: totalWorkingDays > 0 ? (basic_salary * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
-      hra: totalWorkingDays > 0 ? (hra * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
-      special_allowances: totalWorkingDays > 0 ? (special_allowances * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
-      bonus: totalWorkingDays > 0 ? (bonus * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
+      unpaid_leave_deduction: unpaidLeaveDeduction,
+      basic_salary: basic_salary, // Full (not pro-rated)
+      hra: hra, // Full
+      special_allowances: special_allowances, // Full
+      bonus: bonus, // Full
       status: userRole === "super_admin" ? "Paid" : "Pending",
       payment_method: bankDetails ? "Bank Transfer" : "Cash",
       payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
@@ -181,10 +181,10 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
     console.log(`Inserting payroll for employee "${employeeId}":`, payrollData);
     await queryAsync("INSERT INTO payroll SET ?", payrollData);
 
-    if (unpaid_leave_deduction > 0) {
+    if (unpaidLeaveDeduction > 0) {
       await queryAsync(
-        "INSERT INTO payroll_audit (employee_id, month, action, details, created_at) VALUES (?, ?, ?, ?, NOW())",
-        [employeeId, month, "unpaid_leave_deduction", `Deducted ${formatCurrency(unpaid_leave_deduction)} for ${unpaidLeaveDays} unpaid leave days`]
+        "INSERT INTO audit_log (employee_id, month, action, details, created_at) VALUES (?, ?, ?, ?, NOW())",
+        [employeeId, month, "unpaid_leave_deduction", `Deducted ${formatCurrency(unpaidLeaveDeduction)} for ${unpaidLeaveDays} unpaid leave days`]
       );
     }
 
@@ -289,7 +289,6 @@ const generatePayslip = async (req, res) => {
   try {
     validateInput(employeeId, month);
 
-    // Allow employee, dept_head, manager, and hr to view only their own payslips
     if (["employee", "dept_head", "manager", "hr"].includes(role) && employeeId !== employee_id) {
       return res
         .status(403)
@@ -371,22 +370,37 @@ const generatePayslip = async (req, res) => {
       employee[field] = parseNumber(employee[field]);
     });
 
+    // Validation: totalDeductions now includes unpaid_leave_deduction (consistent with full gross)
     const totalDeductions =
       employee.pf_deduction +
       employee.esic_deduction +
       employee.professional_tax +
       employee.tax_deduction +
       employee.unpaid_leave_deduction;
-    if (Math.abs(employee.net_salary - (employee.gross_salary - totalDeductions)) > 0.01) {
+    const calculatedNet = Math.max(0, employee.gross_salary - totalDeductions);
+
+    if (Math.abs(calculatedNet - employee.net_salary) > 0.01) {
       console.error(`Net salary mismatch for ${employeeId} in ${month}:`, {
-        calculated: employee.gross_salary - totalDeductions,
+        calculated: calculatedNet,
         stored: employee.net_salary,
       });
-      await queryAsync(
-        "INSERT INTO payroll_audit (employee_id, month, action, details, created_at) VALUES (?, ?, ?, ?, NOW())",
-        [employeeId, month, "calculation_error", `Net salary mismatch: calculated=${employee.gross_salary - totalDeductions}, stored=${employee.net_salary}`]
-      );
-      throw new Error(`Invalid net salary for ${employeeId} in ${month}`);
+      try {
+        await queryAsync(
+          "INSERT INTO audit_log (action, employee_id, description, performed_by, created_at) VALUES (?, ?, ?, ?, NOW())",
+          [
+            "CALCULATION_ERROR",
+            employeeId,
+            `Net salary mismatch: calculated=${formatCurrency(calculatedNet)}, stored=${formatCurrency(employee.net_salary)}`,
+            employee_id || "SYSTEM",
+          ]
+        );
+      } catch (auditError) {
+        console.warn(`Failed to log to audit_log: ${auditError.message}`);
+      }
+      return res.status(400).json({
+        error: `Invalid net salary calculation for ${employeeId} in ${month}`,
+        details: `Calculated: ${formatCurrency(calculatedNet)}, Stored: ${formatCurrency(employee.net_salary)}`,
+      });
     }
 
     let userPassword = "default123";
@@ -422,7 +436,7 @@ const generatePayslip = async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
     doc.pipe(res);
 
-    const logoPath = path.join(__dirname, "../public/images/company_logo.png");
+    const logoPath = path.join(__dirname, "uploads/LOGO.jpg");
     if (fs.existsSync(logoPath)) {
       doc.image(logoPath, 40, 30, { width: 80, height: 40 });
     } else {
@@ -433,18 +447,19 @@ const generatePayslip = async (req, res) => {
       .font("Times-Bold")
       .fontSize(18)
       .fillColor("#1a3c7a")
-      .text(COMPANY_CONFIG.company_name, 140, 30);
+      .text(COMPANY_CONFIG.company_name, 0, 30, { width: 595, align: "center" });  
     doc
       .font("Times-Roman")
       .fontSize(9)
       .fillColor("#444")
-      .text(COMPANY_CONFIG.address, 140, 50, { width: 400 });
+      .text(COMPANY_CONFIG.address, 0, 50, { width: 595, align: "center" }); 
     doc
       .fontSize(9)
       .text(
         `PAN: ${COMPANY_CONFIG.company_pan}   GSTIN: ${COMPANY_CONFIG.company_gstin}`,
-        140,
-        65
+        0,
+        65,
+        { width: 595, align: "center" }  // Centered
       );
     doc
       .moveDown(2)
@@ -625,8 +640,15 @@ const getPayslips = async (req, res) => {
   const { page = 1, limit = 10, month, employeeId } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
+  const normalizedRole = role.toLowerCase().trim();
+
+  const allowedRoles = ["super_admin", "hr", "employee", "dept_head", "manager"];
+  if (!allowedRoles.includes(normalizedRole)) {
+    console.warn(`Access denied for invalid role: ${role} (normalized: ${normalizedRole})`);
+    return res.status(403).json({ error: "Access denied" });
+  }
+
   try {
-    // Validate requesting employee
     const [requestingEmployee] = await queryAsync(
       `SELECT employee_id, role, status FROM hrms_users WHERE employee_id = ?`,
       [employee_id]
@@ -657,27 +679,37 @@ const getPayslips = async (req, res) => {
     let params = [];
     let countParams = [];
 
-    // Role-based access control
-    if (!["super_admin", "hr"].includes(role)) {
-      // Restrict to own payslips for employee, dept_head, manager
-      query += " WHERE p.employee_id = ?";
-      countQuery += " WHERE p.employee_id = ?";
-      params.push(employee_id);
-      countParams.push(employee_id);
-    } else if (role === "hr" && employeeId) {
-      // HR can view specific employee's payslips, except other HR users
+    if (normalizedRole === "hr" && employeeId) {
       const [targetEmployee] = await queryAsync(
         `SELECT role FROM hrms_users WHERE employee_id = ?`,
         [employeeId]
       );
-      if (targetEmployee?.role === "hr") {
-        console.warn(`HR user ${employee_id} attempted to view payslip of another HR user ${employeeId}`);
+      const targetNormalizedRole = targetEmployee?.role?.toLowerCase().trim();
+      if (targetNormalizedRole === "hr" && employeeId !== employee_id) {
+        console.warn(`HR user ${employee_id} attempted to view another HR's payslips: ${employeeId}`);
         return res.status(403).json({ error: "HR users cannot view payslips of other HR users" });
       }
       query += " WHERE p.employee_id = ?";
       countQuery += " WHERE p.employee_id = ?";
       params.push(employeeId);
       countParams.push(employeeId);
+      console.log(`HR fetching payslips for specific employee: ${employeeId}`);
+    } else if (normalizedRole === "super_admin") {
+      if (employeeId) {
+        query += " WHERE p.employee_id = ?";
+        countQuery += " WHERE p.employee_id = ?";
+        params.push(employeeId);
+        countParams.push(employeeId);
+        console.log(`Super admin fetching payslips for specific: ${employeeId}`);
+      } else {
+        console.log("Super admin fetching all payslips");
+      }
+    } else {
+      query += " WHERE p.employee_id = ?";
+      countQuery += " WHERE p.employee_id = ?";
+      params.push(employee_id);
+      countParams.push(employee_id);
+      console.log(`${normalizedRole} fetching own payslips: ${employee_id}`);
     }
 
     if (month) {
@@ -693,7 +725,8 @@ const getPayslips = async (req, res) => {
     query += " ORDER BY p.month DESC, u.full_name LIMIT ? OFFSET ?";
     params.push(parseInt(limit), offset);
 
-    console.log(`Executing getPayslips query:`, query, params);
+    console.log(`Executing getPayslips query for ${normalizedRole}:`, { query, params });
+
     const [payslips, [{ total }]] = await Promise.all([
       queryAsync(query, params),
       queryAsync(countQuery, countParams),
@@ -701,7 +734,6 @@ const getPayslips = async (req, res) => {
 
     payslips.forEach((payslip) => {
       payslip.salary = parseFloat(payslip.salary) || 0;
-      // Ensure numerical fields are parsed
       [
         "basic_salary",
         "hra",
@@ -716,15 +748,16 @@ const getPayslips = async (req, res) => {
       });
     });
 
-    console.log(`Fetched ${payslips.length} payslips, total: ${total}`);
+    console.log(`Fetched ${payslips.length} payslips for ${normalizedRole}, total: ${total}`);
     res.json({
       message: "Payslips fetched successfully",
       data: payslips,
       totalRecords: total,
     });
   } catch (error) {
-    console.error(`Error fetching payslips:`, error.message, error.sqlMessage);
-    res.status(error.message.includes("not found") ? 404 : 400).json({
+    console.error(`Error fetching payslips for ${normalizedRole}:`, error.message, error.sqlMessage || error);
+    const status = error.message.includes("not found") ? 404 : error.message.includes("Invalid") ? 400 : 500;
+    res.status(status).json({
       error: "Error fetching payslips",
       details: error.sqlMessage || error.message,
     });

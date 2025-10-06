@@ -1245,6 +1245,7 @@ const deleteEmployee = async (req, res) => {
     exitChecklist,
   } = req.body;
 
+  // Permission checks
   if (!["super_admin", "hr"].includes(userRole)) {
     return res
       .status(403)
@@ -1253,6 +1254,8 @@ const deleteEmployee = async (req, res) => {
   if (userRole === "hr" && role === "hr") {
     return res.status(403).json({ error: "HR cannot terminate HR accounts" });
   }
+
+  // Input validations
   if (!role || !exitType) {
     return res.status(400).json({ error: "Role and exit type are required" });
   }
@@ -1260,8 +1263,7 @@ const deleteEmployee = async (req, res) => {
     return res
       .status(400)
       .json({
-        error:
-          "Notice start and last working dates are required for resignation",
+        error: "Notice start and last working dates are required for resignation",
       });
   }
   if (exitChecklist && typeof exitChecklist !== "object") {
@@ -1273,6 +1275,7 @@ const deleteEmployee = async (req, res) => {
   try {
     await queryAsync("START TRANSACTION");
 
+    // Check if employee exists
     const [existingRecord] = await queryAsync(
       `SELECT employee_id, full_name, role, status FROM hrms_users WHERE id = ? AND role = ?`,
       [id, role]
@@ -1288,6 +1291,7 @@ const deleteEmployee = async (req, res) => {
         .json({ error: "Only active employees can be terminated" });
     }
 
+    // Delete from related tables
     const relatedTables = [
       { table: "payroll", column: "employee_id" },
       { table: "personal_details", column: "employee_id" },
@@ -1341,17 +1345,6 @@ const deleteEmployee = async (req, res) => {
     );
 
     await queryAsync("COMMIT");
-
-    const { sendNotification } = require("./notificationService");
-    await sendNotification({
-      to: "it@company.com,finance@company.com",
-      subject: `Employee ${
-        exitType.charAt(0).toUpperCase() + exitType.slice(1)
-      }`,
-      message: `Employee ${existingRecord.employee_id} terminated by ${
-        req.user.employee_id
-      }. Reason: ${reason || "None"}.`,
-    });
 
     res.json({ message: `${role} terminated successfully` });
   } catch (err) {

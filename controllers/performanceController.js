@@ -22,7 +22,7 @@ const checkEmployeeExists = async (employee_id) => {
 };
 
 const setEmployeeGoal = async (req, res) => {
-  const { employee_id, title, description, due_date, tasks } = req.body;
+  const { employee_id, title, description, due_date, tasks, appraisal_id } = req.body;
   const created_by = req.user.employee_id;
 
   if (!employee_id || !title || !due_date) {
@@ -54,24 +54,51 @@ const setEmployeeGoal = async (req, res) => {
         throw new Error(`Employee ${employee_id} not found`);
       }
 
-      // Insert goal
+      // Validate appraisal_id if provided
+      if (appraisal_id) {
+        const appraisalCheck = await queryAsync(
+          "SELECT appraisal_id FROM appraisals WHERE appraisal_id = ? AND employee_id = ?",
+          [appraisal_id, employee_id]
+        );
+        if (appraisalCheck.length === 0) {
+          throw new Error(`Invalid appraisal_id ${appraisal_id} for employee ${employee_id}`);
+        }
+      }
+
       const goalQuery = `
-        INSERT INTO goals (employee_id, title, description, due_date, created_by, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+        INSERT INTO goals (
+          employee_id, appraisal_id, title, description, due_date, created_by, status, progress, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `;
       const goalResult = await new Promise((resolve, reject) => {
-        connection.query(goalQuery, [employee_id, title, description || null, due_date, created_by], (err, result) => {
-          if (err) reject(err);
-          else resolve(result);
-        });
+        connection.query(
+          goalQuery,
+          [
+            employee_id,
+            appraisal_id || null,
+            title,
+            description || null,
+            due_date,
+            created_by,
+            "In Progress",
+            0,
+          ],
+          (err, result) => {
+            if (err) reject(err);
+            else resolve(result);
+          }
+        );
       });
 
       const goalId = goalResult.insertId;
 
-      // Insert tasks
+      const insertedTasks = [];
       const taskPromises = (Array.isArray(tasks) ? tasks : []).map((task) => {
         if (!task.title || !task.due_date) {
           throw new Error("Task title and due date are required");
+        }
+        if (new Date(task.due_date) < new Date()) {
+          throw new Error(`Task due date must be in the future: ${task.title}`);
         }
         if (!["Low", "Medium", "High"].includes(task.priority)) {
           task.priority = "Medium";
@@ -80,14 +107,31 @@ const setEmployeeGoal = async (req, res) => {
           task.status = "Pending";
         }
         const taskQuery = `
-          INSERT INTO tasks (goal_id, employee_id, title, description, due_date, priority, status, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+          INSERT INTO tasks (
+            goal_id, employee_id, title, description, due_date, priority, status, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
         `;
         return new Promise((resolve, reject) => {
-          connection.query(taskQuery, [goalId, employee_id, task.title, task.description || null, task.due_date, task.priority, task.status], (err, result) => {
-            if (err) reject(err);
-            else resolve(result);
-          });
+          connection.query(
+            taskQuery,
+            [goalId, employee_id, task.title, task.description || null, task.due_date, task.priority, task.status],
+            (err, result) => {
+              if (err) reject(err);
+              else {
+                insertedTasks.push({
+                  task_id: result.insertId,
+                  goal_id: goalId,
+                  employee_id,
+                  title: task.title,
+                  description: task.description || null,
+                  due_date: task.due_date,
+                  priority: task.priority,
+                  status: task.status,
+                });
+                resolve(result);
+              }
+            }
+          );
         });
       });
 
@@ -103,12 +147,15 @@ const setEmployeeGoal = async (req, res) => {
       res.status(201).json({
         message: "Goal set successfully",
         data: {
-          goal_id: goalId,
+          id: goalId,
           employee_id,
+          appraisal_id: appraisal_id || null,
           title,
           description,
           due_date,
-          tasks,
+          status: "In Progress",
+          progress: 0,
+          tasks: insertedTasks,
         },
       });
     } catch (error) {
@@ -343,6 +390,7 @@ const conductAppraisal = async (req, res) => {
     esic_percentage,
     bonus,
     reviewer_id,
+    goals, // Add goals to destructured req.body
   } = req.body;
   const default_reviewer_id = req.user.employee_id;
 
@@ -352,6 +400,18 @@ const conductAppraisal = async (req, res) => {
 
   if (!employee_id || !performance_score || !manager_comments) {
     return res.status(400).json({ error: "Employee ID, performance score, and manager comments are required" });
+  }
+
+  if (!Array.isArray(achievements) || achievements.length === 0) {
+    return res.status(400).json({ error: "At least one achievement is required" });
+  }
+
+  if (!Array.isArray(competencies) || competencies.length === 0) {
+    return res.status(400).json({ error: "At least one competency is required" });
+  }
+
+  if (!Array.isArray(goals) || goals.length === 0) {
+    return res.status(400).json({ error: "At least one goal is required" });
   }
 
   const score = parseInt(performance_score, 10);
@@ -536,6 +596,115 @@ const conductAppraisal = async (req, res) => {
         });
       }
 
+      // Insert appraisal
+      const appraisalQuery = `
+        INSERT INTO appraisals (
+          employee_id, performance_score, manager_comments, bonus_eligible,
+          promotion_recommended, salary_hike_percentage, reviewer_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+      `;
+      const appraisalResult = await new Promise((resolve, reject) => {
+        connection.query(
+          appraisalQuery,
+          [employee_id, score, manager_comments, !!bonus_eligible, !!promotion_recommended, salaryHike, effective_reviewer_id],
+          (err, result) => {
+            if (err) reject(err);
+            else resolve(result);
+          });
+        });
+      const appraisal_id = appraisalResult.insertId;
+
+      // Insert goals
+      const insertedGoals = [];
+      for (const goal of goals) {
+        if (!goal.title || !goal.due_date) {
+          throw new Error(`Goal missing required fields: title or due_date`);
+        }
+        if (new Date(goal.due_date) < new Date()) {
+          throw new Error(`Goal due date must be in the future: ${goal.title}`);
+        }
+        const goalQuery = `
+          INSERT INTO goals (
+            employee_id, appraisal_id, title, description, due_date, created_by, status, progress, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `;
+        const goalResult = await new Promise((resolve, reject) => {
+          connection.query(
+            goalQuery,
+            [
+              employee_id,
+              appraisal_id,
+              goal.title,
+              goal.description || null,
+              goal.due_date,
+              effective_reviewer_id,
+              goal.status || "In Progress",
+              goal.progress || 0,
+            ],
+            (err, result) => {
+              if (err) reject(err);
+              else resolve(result);
+            }
+          );
+        });
+        const goalId = goalResult.insertId;
+
+        // Insert tasks
+        const insertedTasks = [];
+        if (Array.isArray(goal.tasks) && goal.tasks.length > 0) {
+          for (const task of goal.tasks) {
+            if (!task.title || !task.due_date) {
+              throw new Error(`Task for goal ${goal.title} missing required fields: title or due_date`);
+            }
+            if (new Date(task.due_date) < new Date()) {
+              throw new Error(`Task due date must be in the future: ${task.title}`);
+            }
+            if (!["Low", "Medium", "High"].includes(task.priority)) {
+              task.priority = "Medium";
+            }
+            if (!["Pending", "In Progress", "Completed"].includes(task.status)) {
+              task.status = "Pending";
+            }
+            const taskQuery = `
+              INSERT INTO tasks (
+                goal_id, employee_id, title, description, due_date, priority, status, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            `;
+            const taskResult = await new Promise((resolve, reject) => {
+              connection.query(
+                taskQuery,
+                [goalId, employee_id, task.title, task.description || null, task.due_date, task.priority, task.status],
+                (err, result) => {
+                  if (err) reject(err);
+                  else resolve(result);
+                }
+              );
+            });
+            insertedTasks.push({
+              task_id: taskResult.insertId,
+              goal_id: goalId,
+              employee_id,
+              title: task.title,
+              description: task.description || null,
+              due_date: task.due_date,
+              priority: task.priority,
+              status: task.status,
+            });
+          }
+        }
+        insertedGoals.push({
+          id: goalId,
+          employee_id,
+          appraisal_id,
+          title: goal.title,
+          description: goal.description || null,
+          due_date: goal.due_date,
+          status: goal.status || "In Progress",
+          progress: goal.progress || 0,
+          tasks: insertedTasks,
+        });
+      }
+
       if (promotion_recommended) {
         await new Promise((resolve, reject) => {
           connection.query(
@@ -571,22 +740,6 @@ const conductAppraisal = async (req, res) => {
           });
         });
       }
-
-      const appraisalQuery = `
-        INSERT INTO appraisals (
-          employee_id, performance_score, manager_comments, bonus_eligible,
-          promotion_recommended, salary_hike_percentage, reviewer_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
-      `;
-      await new Promise((resolve, reject) => {
-        connection.query(
-          appraisalQuery,
-          [employee_id, score, manager_comments, !!bonus_eligible, !!promotion_recommended, salaryHike, effective_reviewer_id],
-          (err, result) => {
-            if (err) reject(err);
-            else resolve(result);
-          });
-      });
 
       if (manager_comments) {
         await new Promise((resolve, reject) => {
@@ -644,6 +797,26 @@ const conductAppraisal = async (req, res) => {
         }
       }
 
+      // Insert performance bonus leave if score >= 90
+      if (score >= 90) {
+        const year = new Date().getFullYear();
+        const leaveResult = await queryAsync(
+          "SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type = ? AND year = ?",
+          [employee_id, "Annual", year]
+        );
+        if (leaveResult.length === 0) {
+          await queryAsync(
+            "INSERT INTO leave_balances (employee_id, leave_type, year, balance, performance_bonus) VALUES (?, ?, ?, ?, ?)",
+            [employee_id, "Annual", year, 2, 2]
+          );
+        } else {
+          await queryAsync(
+            "UPDATE leave_balances SET balance = balance + 2, performance_bonus = COALESCE(performance_bonus, 0) + 2 WHERE employee_id = ? AND leave_type = ? AND year = ?",
+            [employee_id, "Annual", year]
+          );
+        }
+      }
+
       await new Promise((resolve, reject) => {
         connection.commit(err => {
           if (err) reject(err);
@@ -654,6 +827,7 @@ const conductAppraisal = async (req, res) => {
       res.status(201).json({
         message: "Appraisal conducted successfully",
         data: {
+          appraisal_id,
           employee_id,
           performance_score: score,
           promotion_recommended,
@@ -661,6 +835,7 @@ const conductAppraisal = async (req, res) => {
           new_department_name: promotion_recommended ? new_department_name : null,
           salary_hike_percentage: salaryHike,
           salary_structure_id: new_salary_structure_id,
+          goals: insertedGoals, // Include goals in response
         },
       });
     } catch (error) {

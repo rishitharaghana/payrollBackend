@@ -1833,7 +1833,7 @@ const updateEmployeePersonalDetails = async (req, res) => {
     employeeId !== userId
   ) {
     return res
-      .status(403)
+      .status(403)  
       .json({
         error: "Access denied: You can only edit your own personal details",
       });

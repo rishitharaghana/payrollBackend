@@ -37,7 +37,6 @@ const generateEmployeeId = async () => {
 const createEmployee = async (req, res) => {
   upload.fields([{ name: "photo", maxCount: 1 }])(req, res, async (err) => {
     if (err) {
-      console.error(" error:", err.message, err.code);
       if (err.code === "LIMIT_FILE_SIZE") {
         return res.status(400).json({ error: "Photo size exceeds 5MB limit" });
       }
@@ -48,8 +47,6 @@ const createEmployee = async (req, res) => {
         .status(400)
         .json({ error: `File upload error: ${err.message}` });
     }
-
-  
 
     const userRole = req.user.role;
     const {
@@ -168,7 +165,6 @@ const createEmployee = async (req, res) => {
     const requiredSalaryFields = { basic_salary };
     for (const [key, value] of Object.entries(requiredSalaryFields)) {
       if (!value || value.toString().trim() === "") {
-        console.error(`Validation failed: ${key} is required`);
         return res.status(400).json({ error: `${key} is required` });
       }
     }
@@ -187,7 +183,6 @@ const createEmployee = async (req, res) => {
     };
     for (const [key, value] of Object.entries(numericSalaryFields)) {
       if (value && (isNaN(value) || Number(value) < 0)) {
-        console.error(`Validation failed: Invalid ${key}`);
         return res.status(400).json({ error: `Invalid ${key}` });
       }
     }
@@ -273,7 +268,6 @@ const createEmployee = async (req, res) => {
         req.user.employee_id || "SYSTEM",
       ];
 
-
       const employeeResult = await queryAsync(employeeQuery, employeeValues);
 
       const calculatedPf =
@@ -304,8 +298,6 @@ const createEmployee = async (req, res) => {
         parseFloat(bonus) || 0,
       ];
 
-
-
       const salaryResult = await queryAsync(salaryQuery, salaryValues);
 
       await queryAsync(
@@ -326,14 +318,8 @@ const createEmployee = async (req, res) => {
         try {
           const { allocateMonthlyLeaves } = require("./leaveController");
           await allocateMonthlyLeaves({ user: req.user });
-          console.log(
-            `Initial leave allocation completed for employee ${employeeId}`
-          );
         } catch (err) {
-          console.error(
-            `Failed to allocate initial leave for employee ${employeeId}:`,
-            err.message
-          );
+          // Silently handle leave allocation failure
         }
       }
 
@@ -379,7 +365,6 @@ const createEmployee = async (req, res) => {
       });
     } catch (err) {
       await queryAsync("ROLLBACK");
-      console.error("DB error:", err.message, err.sqlMessage, err.code);
       if (err.code === "ER_BAD_FIELD_ERROR") {
         return res.status(500).json({
           error: "Database schema mismatch",
@@ -575,7 +560,6 @@ const updateEmployee = async (req, res) => {
         },
       });
     } catch (err) {
-      console.error("DB error:", err.message, err.sqlMessage, err.code);
       res.status(500).json({ error: `Database error: ${err.message}` });
     }
   });
@@ -584,7 +568,6 @@ const updateEmployee = async (req, res) => {
 const createSalaryStructure = async (req, res) => {
   const userRole = req.user.role;
   if (!["super_admin", "hr"].includes(userRole)) {
-    console.error("Access denied: Invalid role", userRole);
     return res.status(403).json({ error: "Access denied" });
   }
 
@@ -605,7 +588,6 @@ const createSalaryStructure = async (req, res) => {
   const requiredFields = { employee_id, basic_salary };
   for (const [key, value] of Object.entries(requiredFields)) {
     if (!value || value.toString().trim() === "") {
-      console.error(`Validation failed: ${key} is required`);
       return res.status(400).json({ error: `${key} is required` });
     }
   }
@@ -624,7 +606,6 @@ const createSalaryStructure = async (req, res) => {
   };
   for (const [key, value] of Object.entries(numericFields)) {
     if (value && (isNaN(value) || Number(value) < 0)) {
-      console.error(`Validation failed: Invalid ${key}`);
       return res.status(400).json({ error: `Invalid ${key}` });
     }
   }
@@ -635,13 +616,9 @@ const createSalaryStructure = async (req, res) => {
       [employee_id]
     );
     if (!employee) {
-      console.error(`Employee not found: ${employee_id}`);
       return res.status(404).json({ error: "Employee not found" });
     }
     if (employee.status !== "active") {
-      console.error(
-        `Employee is not active: ${employee_id}, status: ${employee.status}`
-      );
       return res
         .status(400)
         .json({ error: `Employee is not active (status: ${employee.status})` });
@@ -652,9 +629,6 @@ const createSalaryStructure = async (req, res) => {
       [employee_id, new Date().toISOString().split("T")[0]]
     );
     if (existingSalary) {
-      console.error(
-        `Salary structure already exists for employee: ${employee_id}`
-      );
       return res
         .status(400)
         .json({
@@ -697,7 +671,6 @@ const createSalaryStructure = async (req, res) => {
       new Date().toISOString().split("T")[0],
     ];
 
-
     const [result] = await queryAsync(salaryQuery, salaryValues);
 
     await queryAsync(
@@ -730,11 +703,6 @@ const createSalaryStructure = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error(
-      "DB error in createSalaryStructure:",
-      err.message,
-      err.sqlMessage
-    );
     if (err.code === "ER_BAD_FIELD_ERROR") {
       return res.status(500).json({
         error: "Database schema mismatch",
@@ -775,7 +743,9 @@ const createEmployeePersonalDetails = async (req, res) => {
   } = req.body;
 
   if (
-    !["super_admin", "hr", "employee"].includes(userRole) ||
+    !["super_admin", "hr", "employee", "dept_head", "manager"].includes(
+      userRole
+    ) ||
     (userRole !== "super_admin" && employeeId !== userId)
   ) {
     return res.status(403).json({
@@ -805,7 +775,7 @@ const createEmployeePersonalDetails = async (req, res) => {
 
   try {
     const [user] = await queryAsync(
-      `SELECT employee_id, full_name, email, mobile FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee')`,
+      `SELECT employee_id, full_name, email, mobile FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee', 'dept_head', 'manager')`,
       [employeeId]
     );
     if (!user) {
@@ -904,7 +874,6 @@ const createEmployeePersonalDetails = async (req, res) => {
       data: { id: personalResult.insertId, employee_id: finalEmployeeId },
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -931,7 +900,11 @@ const createEducationDetails = async (req, res) => {
   const normalizedBodyId = employeeId?.trim().toUpperCase();
   const normalizedUserId = userId?.trim().toUpperCase();
 
-  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+  if (
+    !["super_admin", "hr", "employee", "dept_head", "manager"].includes(
+      userRole
+    )
+  ) {
     return res
       .status(403)
       .json({ error: "Access denied: Insufficient permissions" });
@@ -963,7 +936,7 @@ const createEducationDetails = async (req, res) => {
 
   try {
     const [employee] = await queryAsync(
-      `SELECT employee_id FROM hrms_users WHERE UPPER(TRIM(employee_id)) = ? AND role IN ('hr', 'employee')`,
+      `SELECT employee_id FROM hrms_users WHERE UPPER(TRIM(employee_id)) = ? AND role IN ('hr', 'employee', 'dept_head', 'manager')`,
       [normalizedBodyId]
     );
     if (!employee) {
@@ -1007,7 +980,6 @@ const createEducationDetails = async (req, res) => {
       data: { id: result.insertId, employee_id: normalizedBodyId },
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -1025,7 +997,11 @@ const createDocuments = async (req, res) => {
     let { employeeId, documentType } = req.body;
     const document = req.files?.["document"]?.[0];
 
-    if (!["super_admin", "hr", "employee"].includes(userRole)) {
+    if (
+      !["super_admin", "hr", "employee", "dept_head", "manager"].includes(
+        userRole
+      )
+    ) {
       return res
         .status(403)
         .json({ error: "Access denied: Insufficient permissions" });
@@ -1056,7 +1032,7 @@ const createDocuments = async (req, res) => {
 
     try {
       const [employee] = await queryAsync(
-        `SELECT employee_id FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee')`,
+        `SELECT employee_id FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee', 'dept_head', 'manager')`,
         [employeeId]
       );
       if (!employee) {
@@ -1104,7 +1080,6 @@ const createDocuments = async (req, res) => {
         },
       });
     } catch (err) {
-      console.error("DB error:", err.message, err.sqlMessage, err.code);
       res.status(500).json({ error: `Database error: ${err.message}` });
     }
   });
@@ -1119,7 +1094,11 @@ const createBankDetails = async (req, res) => {
     ifscCode,
   } = req.body;
 
-  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+  if (
+    !["super_admin", "hr", "employee", "dept_head", "manager"].includes(
+      userRole
+    )
+  ) {
     return res
       .status(403)
       .json({ error: "Access denied: Insufficient permissions" });
@@ -1143,7 +1122,7 @@ const createBankDetails = async (req, res) => {
 
   try {
     const [employee] = await queryAsync(
-      `SELECT employee_id, full_name FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee')`,
+      `SELECT employee_id, full_name FROM hrms_users WHERE employee_id = ? AND role IN ('hr', 'employee', 'dept_head', 'manager')`,
       [employeeId]
     );
     if (!employee) {
@@ -1173,7 +1152,6 @@ const createBankDetails = async (req, res) => {
       data: { id: result.insertId, employee_id: employeeId },
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -1205,7 +1183,6 @@ const fetchEmployees = async (req, res) => {
 
     res.json({ message: "Employees fetched successfully", data: employees });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: "Database error" });
   }
 };
@@ -1228,7 +1205,6 @@ const getEmployeeById = async (req, res) => {
       .status(200)
       .json({ message: "Employee fetched successfully", data: employee });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: "Failed to fetch employee" });
   }
 };
@@ -1245,7 +1221,6 @@ const deleteEmployee = async (req, res) => {
     exitChecklist,
   } = req.body;
 
-  // Permission checks
   if (!["super_admin", "hr"].includes(userRole)) {
     return res
       .status(403)
@@ -1255,7 +1230,6 @@ const deleteEmployee = async (req, res) => {
     return res.status(403).json({ error: "HR cannot terminate HR accounts" });
   }
 
-  // Input validations
   if (!role || !exitType) {
     return res.status(400).json({ error: "Role and exit type are required" });
   }
@@ -1275,7 +1249,6 @@ const deleteEmployee = async (req, res) => {
   try {
     await queryAsync("START TRANSACTION");
 
-    // Check if employee exists
     const [existingRecord] = await queryAsync(
       `SELECT employee_id, full_name, role, status FROM hrms_users WHERE id = ? AND role = ?`,
       [id, role]
@@ -1291,7 +1264,6 @@ const deleteEmployee = async (req, res) => {
         .json({ error: "Only active employees can be terminated" });
     }
 
-    // Delete from related tables
     const relatedTables = [
       { table: "payroll", column: "employee_id" },
       { table: "personal_details", column: "employee_id" },
@@ -1349,7 +1321,6 @@ const deleteEmployee = async (req, res) => {
     res.json({ message: `${role} terminated successfully` });
   } catch (err) {
     await queryAsync("ROLLBACK");
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res
       .status(500)
       .json({ error: `Database error during operation: ${err.message}` });
@@ -1373,7 +1344,6 @@ const fetchAlumni = async (req, res) => {
     );
     res.json({ message: "Alumni fetched successfully", data: alumni });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -1415,7 +1385,6 @@ const getCurrentUserProfile = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: "Database error" });
   }
 };
@@ -1425,7 +1394,7 @@ const getEmployeeProgress = async (req, res) => {
   const userId = req.user.employee_id;
   const employeeId = req.params.employeeId || userId;
 
-  if (!["super_admin", "hr", "employee"].includes(userRole)) {
+  if (!["super_admin", "hr", "employee", "dept_head", "manager"].includes(userRole)) {
     return res
       .status(403)
       .json({ error: "Access denied: Insufficient permissions" });
@@ -1488,7 +1457,6 @@ const getEmployeeProgress = async (req, res) => {
       data: progress,
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: "Database error" });
   }
 };
@@ -1567,7 +1535,6 @@ const getEmployeePersonalDetails = async (req, res) => {
       data: personalDetails || null,
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -1648,7 +1615,6 @@ const getEmployeeEducationDetails = async (req, res) => {
       data: educationDetails,
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -1745,7 +1711,6 @@ const getEmployeeDocuments = async (req, res) => {
       data: formattedDocuments,
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -1821,7 +1786,6 @@ const getEmployeeBankDetails = async (req, res) => {
       data: bankDetails || null,
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -1941,7 +1905,6 @@ const updateEmployeePersonalDetails = async (req, res) => {
 
     res.json({ message: "Personal details updated successfully" });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -2069,7 +2032,6 @@ const updateEducationDetails = async (req, res) => {
       data: { employee_id: employeeId.trim().toUpperCase() },
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
@@ -2168,7 +2130,6 @@ const updateBankDetails = async (req, res) => {
       data: { employee_id: employeeId },
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };

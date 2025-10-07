@@ -106,19 +106,19 @@ const getDashboardData = async (req, res) => {
       { title: 'Pending Leaves', value: stats.pending_leaves.toString(), change: '0%', icon: 'Calendar' },
     ];
 
-    let activitiesQuery = `
-      SELECT 'Attendance' as type, u.full_name as name, a.created_at as time, 'Clock' as icon
-      FROM attendance a
-      JOIN hrms_users u ON a.employee_id = u.employee_id
-      WHERE a.recipient = ? AND a.created_at >= DATE_SUB(NOW(), INTERVAL 1 WEEK)
-      UNION
-      SELECT 'Leave Applied' as type, u.full_name as name, l.start_date as time, 'Calendar' as icon
-      FROM leaves l
-      JOIN hrms_users u ON l.employee_id = u.employee_id
-      JOIN leave_recipients lr ON l.id = lr.leave_id
-      WHERE lr.recipient_id = ? AND l.start_date >= DATE_SUB(NOW(), INTERVAL 1 WEEK)
-      ORDER BY time DESC LIMIT 5
-    `;
+   let activitiesQuery = `
+  SELECT 'Attendance' as type, u.full_name as name, a.created_at as time, 'Clock' as icon
+  FROM attendance a
+  JOIN hrms_users u ON a.employee_id = u.employee_id
+  WHERE a.recipient = ? AND a.created_at >= DATE_SUB(NOW(), INTERVAL 1 WEEK)
+  UNION
+  SELECT 'Leave Applied' as type, u.full_name as name, l.created_at as time, 'Calendar' as icon
+  FROM leaves l
+  JOIN hrms_users u ON l.employee_id = u.employee_id
+  JOIN leave_recipients lr ON l.id = lr.leave_id
+  WHERE lr.recipient_id = ? AND l.created_at >= DATE_SUB(NOW(), INTERVAL 1 WEEK)
+  ORDER BY time DESC LIMIT 5
+`;
     let activitiesParams = [role, userId];
     if (role === 'super_admin') {
       activitiesQuery = activitiesQuery.replace(

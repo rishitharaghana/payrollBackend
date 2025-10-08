@@ -1461,83 +1461,83 @@ const getEmployeeProgress = async (req, res) => {
   }
 };
 
-const getEmployeePersonalDetails = async (req, res) => {
-  const userRole = req.user.role;
-  const userId = req.user.employee_id;
-  const { employeeId } = req.params;
+  const getEmployeePersonalDetails = async (req, res) => {
+    const userRole = req.user.role;
+    const userId = req.user.employee_id;
+    const { employeeId } = req.params;
 
-  if (!employeeId || employeeId === "undefined") {
-    return res
-      .status(400)
-      .json({ error: "Employee ID is required and cannot be undefined" });
-  }
-
-  if (
-    !["super_admin", "hr", "employee", "dept_head", "manager"].includes(
-      userRole
-    )
-  ) {
-    return res
-      .status(403)
-      .json({ error: "Access denied: Insufficient permissions" });
-  }
-
-  if (
-    ["employee", "dept_head", "manager"].includes(userRole) &&
-    employeeId !== userId
-  ) {
-    return res
-      .status(403)
-      .json({
-        error: "Access denied: You can only view your own personal details",
-      });
-  }
-
-  if (userRole === "hr") {
-    const [targetUser] = await queryAsync(
-      `SELECT role FROM hrms_users WHERE employee_id = ?`,
-      [employeeId]
-    );
-    if (!targetUser) {
-      return res.status(404).json({ error: "User not found" });
+    if (!employeeId || employeeId === "undefined") {
+      return res
+        .status(400)
+        .json({ error: "Employee ID is required and cannot be undefined" });
     }
-    if (targetUser.role === "hr" && employeeId !== userId) {
+
+    if (
+      !["super_admin", "hr", "employee", "dept_head", "manager"].includes(
+        userRole
+      )
+    ) {
+      return res
+        .status(403)
+        .json({ error: "Access denied: Insufficient permissions" });
+    }
+
+    if (
+      ["employee", "dept_head", "manager"].includes(userRole) &&
+      employeeId !== userId
+    ) {
       return res
         .status(403)
         .json({
-          error:
-            "Access denied: HR cannot view other HR users' personal details",
+          error: "Access denied: You can only view your own personal details",
         });
     }
-  }
 
-  try {
-    const [user] = await queryAsync(
-      `SELECT employee_id FROM hrms_users WHERE employee_id = ?`,
-      [employeeId]
-    );
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
+    if (userRole === "hr") {
+      const [targetUser] = await queryAsync(
+        `SELECT role FROM hrms_users WHERE employee_id = ?`,
+        [employeeId]
+      );
+      if (!targetUser) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      if (targetUser.role === "hr" && employeeId !== userId) {
+        return res
+          .status(403)
+          .json({
+            error:
+              "Access denied: HR cannot view other HR users' personal details",
+          });
+      }
     }
 
-    const [personalDetails] = await queryAsync(
-      `SELECT employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
-              present_address, previous_address, position_type, employer_id_name, position_title,
-              employment_type, contract_end_date, pan_number, aadhar_number
-       FROM personal_details WHERE employee_id = ?`,
-      [employeeId]
-    );
+    try {
+      const [user] = await queryAsync(
+        `SELECT employee_id FROM hrms_users WHERE employee_id = ?`,
+        [employeeId]
+      );
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
 
-    res.json({
-      message: personalDetails
-        ? "Personal details fetched successfully"
-        : "No personal details found for this employee",
-      data: personalDetails || null,
-    });
-  } catch (err) {
-    res.status(500).json({ error: `Database error: ${err.message}` });
-  }
-};
+      const [personalDetails] = await queryAsync(
+        `SELECT employee_id, full_name, father_name, mother_name, phone, alternate_phone, email, gender,
+                present_address, previous_address, position_type, employer_id_name, position_title,
+                employment_type, contract_end_date, pan_number, aadhar_number
+        FROM personal_details WHERE employee_id = ?`,
+        [employeeId]
+      );
+
+      res.json({
+        message: personalDetails
+          ? "Personal details fetched successfully"
+          : "No personal details found for this employee",
+        data: personalDetails || null,
+      });
+    } catch (err) {
+      res.status(500).json({ error: `Database error: ${err.message}` });
+    }
+  };
 
 const getEmployeeEducationDetails = async (req, res) => {
   const userRole = req.user.role;

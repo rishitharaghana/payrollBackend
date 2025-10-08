@@ -238,23 +238,36 @@ const calculateTax = (gross) => {
 
 const getPayrolls = async (req, res) => {
   try {
-    const { month, page = 1, limit = 10 } = req.query;
+    const { month, page = 1, limit = 10, employeeId } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     let query = `
       SELECT employee_id, employee_name, department, designation_name, 
              gross_salary, pf_deduction, esic_deduction, tax_deduction, 
-             professional_tax, net_salary, status, payment_method, month, payment_date
+             professional_tax, net_salary, status, payment_method, month, payment_date,
+             basic_salary, hra, special_allowances, bonus, paid_leave_days, 
+             unpaid_leave_days, present_days, holidays, total_working_days, 
+             leave_days, unpaid_leave_deduction, leave_details
       FROM payroll`;
     let countQuery = "SELECT COUNT(*) as total FROM payroll";
     let params = [];
     let countParams = [];
 
-    if (month) {
-      validateMonth(month);
-      query += " WHERE month = ?";
-      countQuery += " WHERE month = ?";
-      params.push(month);
-      countParams.push(month);
+    if (month || employeeId) {
+      query += " WHERE";
+      countQuery += " WHERE";
+      if (month) {
+        validateMonth(month);
+        query += " month = ?";
+        countQuery += " month = ?";
+        params.push(month);
+        countParams.push(month);
+      }
+      if (employeeId) {
+        query += (month ? " AND" : "") + " employee_id = ?";
+        countQuery += (month ? " AND" : "") + " employee_id = ?";
+        params.push(employeeId);
+        countParams.push(employeeId);
+      }
     }
 
     query += " LIMIT ? OFFSET ?";
@@ -265,9 +278,15 @@ const getPayrolls = async (req, res) => {
       queryAsync(countQuery, countParams),
     ]);
 
+    // Parse leave_details from JSON
+    const parsedRows = rows.map(row => ({
+      ...row,
+      leave_details: row.leave_details ? JSON.parse(row.leave_details) : [],
+    }));
+
     res.json({
       message: "Payroll fetched successfully",
-      data: rows,
+      data: parsedRows,
       totalRecords: total,
     });
   } catch (err) {
@@ -278,7 +297,6 @@ const getPayrolls = async (req, res) => {
     });
   }
 };
-
 const createPayroll = async (req, res) => {
   const userRole = req.user.role;
   if (!["super_admin", "hr"].includes(userRole)) {
@@ -486,6 +504,7 @@ const generatePayroll = async (req, res) => {
         present_days: presentDays,
         holidays: holidays,
         total_working_days: totalWorkingDays,
+
       };
 
       try {
@@ -607,27 +626,17 @@ const generatePayrollForEmployee = async (req, res) => {
     }
 
     console.log(`Fetching salary structure for "${employeeId}"...`);
-    const salaryStructureQuery = `
-      SELECT basic_salary, hra, special_allowances, hra_percentage, 
-             provident_fund_percentage, provident_fund, esic_percentage, esic, bonus, created_at
-      FROM employee_salary_structure 
-      WHERE employee_id = ?
-      ORDER BY created_at DESC LIMIT 1
-    `;
-    console.log('Executing salary structure query:', salaryStructureQuery, 'Params:', [employeeId]);
-    const [salaryStructure] = await queryAsync(salaryStructureQuery, [employeeId]);
-    
+    const [salaryStructure] = await queryAsync(
+      `SELECT basic_salary, hra, special_allowances, hra_percentage, 
+              provident_fund_percentage, provident_fund, esic_percentage, esic, bonus, created_at
+       FROM employee_salary_structure 
+       WHERE employee_id = ?
+       ORDER BY created_at DESC LIMIT 1`,
+      [employeeId]
+    );
     if (!salaryStructure) {
       console.warn(`No salary structure found for "${employeeId}"`);
-      const [similarRecords] = await queryAsync(
-        `SELECT employee_id FROM employee_salary_structure WHERE employee_id LIKE ?`,
-        [`%${employeeId}%`]
-      );
-      console.log(`Similar employee_ids found:`, similarRecords);
-      return res.status(400).json({ 
-        error: `No salary structure found for employee ${employeeId}`,
-        similarRecords: similarRecords || []
-      });
+      return res.status(400).json({ error: `No salary structure found for employee ${employeeId}` });
     }
     console.log(`Salary structure for "${employeeId}":`, salaryStructure);
 
@@ -644,7 +653,10 @@ const generatePayrollForEmployee = async (req, res) => {
     }
 
     console.log(`Calculating leave and attendance for "${employeeId}", month ${month}...`);
-    const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays } = await calculateLeaveAndAttendance(employeeId, month);
+    const leaveAndAttendance = await calculateLeaveAndAttendance(employeeId, month);
+    const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays, leaveDetails } = leaveAndAttendance;
+
+    console.log(`Leave and attendance for "${employeeId}":`, leaveAndAttendance);
 
     console.log(`Fetching bank details for "${employeeId}"...`);
     const [bankDetails] = await queryAsync(
@@ -689,6 +701,7 @@ const generatePayrollForEmployee = async (req, res) => {
         total_working_days: totalWorkingDays,
         leave_days: paidLeaveDays + unpaidLeaveDays,
         unpaid_leave_deduction: 0,
+        leave_details: leaveDetails, // Include leave_details
       };
 
       await queryAsync(
@@ -725,6 +738,9 @@ const generatePayrollForEmployee = async (req, res) => {
       const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
       const tax_deduction = calculateTax(adjustedGrossSalary);
 
+      // Ensure net_salary is non-negative
+      const net_salary = Math.max(0, adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction + unpaidLeaveDeduction));
+
       // Log intermediate calculations
       console.log(`Intermediate calculations for ${employeeId}:`, {
         adjustedGrossSalary,
@@ -734,10 +750,9 @@ const generatePayrollForEmployee = async (req, res) => {
         tax_deduction,
         unpaidLeaveDeduction,
         dailyRate,
-        effectiveWorkingDays
+        effectiveWorkingDays,
+        net_salary,
       });
-
-      const net_salary = Math.max(0, adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction));
 
       if (isNaN(net_salary)) {
         console.error(`Net salary calculation resulted in NaN for ${employeeId}. Forcing net_salary to 0.`, {
@@ -745,7 +760,8 @@ const generatePayrollForEmployee = async (req, res) => {
           pf_deduction,
           esic_deduction,
           professional_tax,
-          tax_deduction
+          tax_deduction,
+          unpaidLeaveDeduction,
         });
         throw new Error(`Invalid net salary calculation for ${employeeId}`);
       }
@@ -761,10 +777,10 @@ const generatePayrollForEmployee = async (req, res) => {
         esic_deduction,
         professional_tax,
         tax_deduction,
-        basic_salary: totalWorkingDays > 0 ? (basic_salary * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
-        hra: totalWorkingDays > 0 ? (hra * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
-        special_allowances: totalWorkingDays > 0 ? (special_allowances * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
-        bonus: totalWorkingDays > 0 ? (bonus * effectiveWorkingDays / totalWorkingDays) || 0 : 0,
+        basic_salary: totalWorkingDays > 0 ? (basic_salary * effectiveWorkingDays / totalWorkingDays) : 0,
+        hra: totalWorkingDays > 0 ? (hra * effectiveWorkingDays / totalWorkingDays) : 0,
+        special_allowances: totalWorkingDays > 0 ? (special_allowances * effectiveWorkingDays / totalWorkingDays) : 0,
+        bonus: totalWorkingDays > 0 ? (bonus * effectiveWorkingDays / totalWorkingDays) : 0,
         status: userRole === "super_admin" ? "Paid" : "Pending",
         payment_method: bankDetails ? "Bank Transfer" : "Cash",
         payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
@@ -778,6 +794,7 @@ const generatePayrollForEmployee = async (req, res) => {
         total_working_days: totalWorkingDays,
         leave_days: paidLeaveDays + unpaidLeaveDays,
         unpaid_leave_deduction: unpaidLeaveDeduction,
+        leave_details: leaveDetails, // Include leave_details
       };
 
       if (unpaidLeaveDays > 0) {
@@ -799,8 +816,8 @@ const generatePayrollForEmployee = async (req, res) => {
         employee_id, employee_name, department, designation_name, gross_salary, pf_deduction, esic_deduction,
         professional_tax, tax_deduction, basic_salary, hra, special_allowances, bonus, net_salary, status,
         payment_method, payment_date, month, created_by, company_id, paid_leave_days, unpaid_leave_days,
-        present_days, holidays, total_working_days, leave_days, unpaid_leave_deduction
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        present_days, holidays, total_working_days, leave_days, unpaid_leave_deduction, leave_details
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const values = [
       payrollData.employee_id,
@@ -830,6 +847,7 @@ const generatePayrollForEmployee = async (req, res) => {
       payrollData.total_working_days,
       payrollData.leave_days,
       payrollData.unpaid_leave_deduction,
+      JSON.stringify(payrollData.leave_details), // Store as JSON
     ];
 
     console.log('Executing payroll insert query:', query, 'Values:', values);

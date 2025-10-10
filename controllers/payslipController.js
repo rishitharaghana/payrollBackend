@@ -54,11 +54,9 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
       [employeeId]
     );
     if (!employee) {
-      console.error(`Employee "${employeeId}" not found in hrms_users`);
       throw new Error(`Employee not found: ${employeeId}`);
     }
     if (employee.status !== "active") {
-      console.warn(`Employee "${employeeId}" is not active (status: ${employee.status})`);
       throw new Error(`Employee is not active (status: ${employee.status})`);
     }
 
@@ -71,19 +69,10 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
       [employeeId]
     );
     if (!salaryStructure) {
-      console.warn(`No salary structure found for "${employeeId}"`);
-      const [similarRecords] = await queryAsync(
-        `SELECT employee_id FROM employee_salary_structure WHERE employee_id LIKE ?`,
-        [`%${employeeId}%`]
-      );
-      console.log(`Similar employee_ids found for ${employeeId}:`, similarRecords || []);
       throw new Error(`No salary structure found for employee ${employeeId}`);
     }
-    console.log(`Salary structure for "${employeeId}":`, salaryStructure);
 
-    // Require join_date only for employee and dept_head roles
     if (["employee", "dept_head"].includes(employee.role) && !employee.join_date) {
-      console.warn(`Missing join_date for "${employeeId}" with role ${employee.role}`);
       throw new Error("Joining date is required for employee/department head roles");
     }
 
@@ -92,14 +81,12 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
       [employeeId, month]
     );
     if (existingPayroll) {
-      console.warn(`Payroll already exists for "${employeeId}" for ${month}`);
       return null;
     }
 
     const { unpaidLeaveDays, totalWorkingDays, presentDays, paidLeaveDays, holidays, unaccountedWorkingDays } = await calculateLeaveAndAttendance(employeeId, month);
 
     if (totalWorkingDays === 0) {
-      console.warn(`No working days for "${employeeId}" in ${month}. Skipping payroll generation.`);
       throw new Error(`Cannot generate payroll for ${employeeId} in ${month}: No working days`);
     }
 
@@ -118,30 +105,20 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
     const provident_fund = parseNumber(salaryStructure.provident_fund);
     const esic = parseNumber(salaryStructure.esic);
 
-    const gross_salary = basic_salary + hra + special_allowances + bonus; // Full gross
-    console.log(`Calculated gross_salary for ${employeeId}:`, gross_salary);
-
+    const gross_salary = basic_salary + hra + special_allowances + bonus;
     const effectiveWorkingDays = presentDays + paidLeaveDays + unaccountedWorkingDays;
     const dailyRate = totalWorkingDays > 0 ? gross_salary / totalWorkingDays : 0;
     const unpaidLeaveDeduction = unpaidLeaveDays * dailyRate;
-    const adjustedGrossSalary = gross_salary - unpaidLeaveDeduction; // Equivalent to effectiveWorkingDays * dailyRate
+    const adjustedGrossSalary = gross_salary - unpaidLeaveDeduction;
 
     const pf_deduction = provident_fund || Math.min(adjustedGrossSalary * provident_fund_percentage, 1800);
     const esic_deduction = esic || (adjustedGrossSalary <= 21000 ? adjustedGrossSalary * esic_percentage : 0);
     const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
     const tax_deduction = calculateTax(adjustedGrossSalary);
 
-    const net_salary = Math.max(0, adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction)); // No double subtraction of unpaid
+    const net_salary = Math.max(0, adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction));
 
     if (isNaN(net_salary)) {
-      console.error(`Net salary calculation resulted in NaN for ${employeeId}:`, {
-        adjustedGrossSalary,
-        pf_deduction,
-        esic_deduction,
-        professional_tax,
-        tax_deduction,
-        unpaidLeaveDeduction,
-      });
       await queryAsync(
         "INSERT INTO audit_log (employee_id, month, action, details, created_at) VALUES (?, ?, ?, ?, NOW())",
         [employeeId, month, "calculation_error", `Net salary calculation resulted in NaN`]
@@ -154,17 +131,17 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
       employee_name: employee.full_name,
       department: employee.department_name || "HR",
       designation_name: employee.designation_name || null,
-      gross_salary: gross_salary, // Full gross
+      gross_salary: gross_salary,  
       net_salary,
       pf_deduction,
       esic_deduction,
       professional_tax,
       tax_deduction,
       unpaid_leave_deduction: unpaidLeaveDeduction,
-      basic_salary: basic_salary, // Full (not pro-rated)
-      hra: hra, // Full
-      special_allowances: special_allowances, // Full
-      bonus: bonus, // Full
+      basic_salary: basic_salary,
+      hra: hra, 
+      special_allowances: special_allowances,
+      bonus: bonus, 
       status: userRole === "super_admin" ? "Paid" : "Pending",
       payment_method: bankDetails ? "Bank Transfer" : "Cash",
       payment_date: new Date(`${month}-01`).toISOString().split("T")[0],
@@ -178,7 +155,6 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
       holidays: holidays,
     };
 
-    console.log(`Inserting payroll for employee "${employeeId}":`, payrollData);
     await queryAsync("INSERT INTO payroll SET ?", payrollData);
 
     if (unpaidLeaveDeduction > 0) {
@@ -190,7 +166,6 @@ const generatePayrollForEmployee = async (employeeId, month, userRole, userId) =
 
     return payrollData;
   } catch (err) {
-    console.error(`Error in generatePayrollForEmployee for "${employeeId}":`, err.message, err.sqlMessage);
     throw err;
   }
 };
@@ -295,7 +270,6 @@ const generatePayslip = async (req, res) => {
         .json({ error: "Access denied: You can only view your own payslip" });
     }
 
-    // Allow super_admin, hr, employee, dept_head, and manager roles
     if (!["super_admin", "hr", "employee", "dept_head", "manager"].includes(role)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -351,7 +325,6 @@ const generatePayslip = async (req, res) => {
           },
         ];
       } catch (genErr) {
-        console.error(`Failed to generate payroll for ${employeeId} in ${month}:`, genErr.message);
         return res.status(400).json({
           error: `Cannot generate payslip for ${employeeId} in ${month}`,
           details: genErr.message,
@@ -370,7 +343,6 @@ const generatePayslip = async (req, res) => {
       employee[field] = parseNumber(employee[field]);
     });
 
-    // Validation: totalDeductions now includes unpaid_leave_deduction (consistent with full gross)
     const totalDeductions =
       employee.pf_deduction +
       employee.esic_deduction +
@@ -380,10 +352,6 @@ const generatePayslip = async (req, res) => {
     const calculatedNet = Math.max(0, employee.gross_salary - totalDeductions);
 
     if (Math.abs(calculatedNet - employee.net_salary) > 0.01) {
-      console.error(`Net salary mismatch for ${employeeId} in ${month}:`, {
-        calculated: calculatedNet,
-        stored: employee.net_salary,
-      });
       try {
         await queryAsync(
           "INSERT INTO audit_log (action, employee_id, description, performed_by, created_at) VALUES (?, ?, ?, ?, NOW())",
@@ -395,7 +363,6 @@ const generatePayslip = async (req, res) => {
           ]
         );
       } catch (auditError) {
-        console.warn(`Failed to log to audit_log: ${auditError.message}`);
       }
       return res.status(400).json({
         error: `Invalid net salary calculation for ${employeeId} in ${month}`,
@@ -411,11 +378,7 @@ const generatePayslip = async (req, res) => {
         const month = String(dobDate.getMonth() + 1).padStart(2, "0");
         const year = dobDate.getFullYear();
         userPassword = `${day}-${month}-${year}`;
-      } else {
-        console.warn(`Invalid DOB for employee ${employeeId}: ${employee.dob}`);
       }
-    } else {
-      console.warn(`DOB missing for employee ${employeeId}. Using default password.`);
     }
 
     const doc = new PDFDocument({
@@ -436,11 +399,9 @@ const generatePayslip = async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
     doc.pipe(res);
 
-    const logoPath = path.join(__dirname, "uploads/LOGO.jpg");
+    const logoPath = path.join(__dirname, "../Uploads/LOGO.jpg");
     if (fs.existsSync(logoPath)) {
       doc.image(logoPath, 40, 30, { width: 80, height: 40 });
-    } else {
-      console.warn(`Logo file not found at ${logoPath}`);
     }
 
     doc
@@ -459,7 +420,7 @@ const generatePayslip = async (req, res) => {
         `PAN: ${COMPANY_CONFIG.company_pan}   GSTIN: ${COMPANY_CONFIG.company_gstin}`,
         0,
         65,
-        { width: 595, align: "center" }  // Centered
+        { width: 595, align: "center" }
       );
     doc
       .moveDown(2)
@@ -619,11 +580,6 @@ const generatePayslip = async (req, res) => {
 
     doc.end();
   } catch (error) {
-    console.error(
-      `Error generating payslip for employee ${employeeId}, month ${month}:`,
-      error.message,
-      error.sqlMessage
-    );
     const status = error.message.includes("Invalid") ||
                    error.message.includes("No salary structure") ||
                    error.message.includes("No working days") ||
@@ -644,7 +600,6 @@ const getPayslips = async (req, res) => {
 
   const allowedRoles = ["super_admin", "hr", "employee", "dept_head", "manager"];
   if (!allowedRoles.includes(normalizedRole)) {
-    console.warn(`Access denied for invalid role: ${role} (normalized: ${normalizedRole})`);
     return res.status(403).json({ error: "Access denied" });
   }
 
@@ -654,11 +609,9 @@ const getPayslips = async (req, res) => {
       [employee_id]
     );
     if (!requestingEmployee) {
-      console.error(`Requesting employee "${employee_id}" not found in hrms_users`);
       return res.status(404).json({ error: `Requesting employee ${employee_id} not found` });
     }
     if (requestingEmployee.status !== "active") {
-      console.warn(`Requesting employee "${employee_id}" is not active (status: ${requestingEmployee.status})`);
       return res.status(400).json({ error: `Requesting employee is not active` });
     }
 
@@ -686,30 +639,24 @@ const getPayslips = async (req, res) => {
       );
       const targetNormalizedRole = targetEmployee?.role?.toLowerCase().trim();
       if (targetNormalizedRole === "hr" && employeeId !== employee_id) {
-        console.warn(`HR user ${employee_id} attempted to view another HR's payslips: ${employeeId}`);
         return res.status(403).json({ error: "HR users cannot view payslips of other HR users" });
       }
       query += " WHERE p.employee_id = ?";
       countQuery += " WHERE p.employee_id = ?";
       params.push(employeeId);
       countParams.push(employeeId);
-      console.log(`HR fetching payslips for specific employee: ${employeeId}`);
     } else if (normalizedRole === "super_admin") {
       if (employeeId) {
         query += " WHERE p.employee_id = ?";
         countQuery += " WHERE p.employee_id = ?";
         params.push(employeeId);
         countParams.push(employeeId);
-        console.log(`Super admin fetching payslips for specific: ${employeeId}`);
-      } else {
-        console.log("Super admin fetching all payslips");
       }
     } else {
       query += " WHERE p.employee_id = ?";
       countQuery += " WHERE p.employee_id = ?";
       params.push(employee_id);
       countParams.push(employee_id);
-      console.log(`${normalizedRole} fetching own payslips: ${employee_id}`);
     }
 
     if (month) {
@@ -724,8 +671,6 @@ const getPayslips = async (req, res) => {
 
     query += " ORDER BY p.month DESC, u.full_name LIMIT ? OFFSET ?";
     params.push(parseInt(limit), offset);
-
-    console.log(`Executing getPayslips query for ${normalizedRole}:`, { query, params });
 
     const [payslips, [{ total }]] = await Promise.all([
       queryAsync(query, params),
@@ -748,14 +693,12 @@ const getPayslips = async (req, res) => {
       });
     });
 
-    console.log(`Fetched ${payslips.length} payslips for ${normalizedRole}, total: ${total}`);
     res.json({
       message: "Payslips fetched successfully",
       data: payslips,
       totalRecords: total,
     });
   } catch (error) {
-    console.error(`Error fetching payslips for ${normalizedRole}:`, error.message, error.sqlMessage || error);
     const status = error.message.includes("not found") ? 404 : error.message.includes("Invalid") ? 400 : 500;
     res.status(status).json({
       error: "Error fetching payslips",

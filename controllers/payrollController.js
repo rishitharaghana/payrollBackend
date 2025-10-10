@@ -8,7 +8,7 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 
 const COMPANY_CONFIG = {
   company_id: 1,
-  company_name: "MNTechs Solutions Pvt Ltd",
+  company_name: "Meet Owner Pvt Ltd",
   company_pan: "ABCDE1234F",
   company_gstin: "12ABCDE1234F1Z5",
   address: "123 Business Street, City, Country",
@@ -34,8 +34,6 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
   const effectiveEndDateStr = effectiveEndDate.toISOString().split("T")[0];
 
   try {
-    console.log(`Calculating leave and attendance for "${employeeId}" in ${month}...`);
-
     const [employee] = await queryAsync(
       "SELECT join_date, status, role FROM hrms_users WHERE employee_id = ?",
       [employeeId]
@@ -44,7 +42,6 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
       throw new Error(`Employee ${employeeId} not found`);
     }
     if (employee.status !== "active") {
-      console.warn(`Employee ${employeeId} is not active (status: ${employee.status})`);
       return {
         paidLeaveDays: 0,
         unpaidLeaveDays: 0,
@@ -57,38 +54,32 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
 
     const joinDate = employee.join_date ? new Date(employee.join_date) : null;
     if (!joinDate && ["employee", "manager"].includes(employee.role)) {
-      console.error(`Missing join_date for employee ${employeeId} with role ${employee.role}`);
       throw new Error("Join date is required for employee/manager roles");
     }
     const effectiveStartDate = joinDate && joinDate > startDate ? joinDate : startDate;
 
-    // Fetch holidays (up to effectiveEndDate)
     let holidayDates = [];
     try {
       const holidays = await queryAsync(
         "SELECT holiday_date FROM holidays WHERE holiday_date BETWEEN ? AND ?",
-        [startDateStr, effectiveEndDateStr]  // FIX: Cap to effectiveEndDateStr
+        [startDateStr, effectiveEndDateStr]
       );
       holidayDates = holidays.map((h) =>
         h.holiday_date instanceof Date
           ? h.holiday_date.toISOString().split("T")[0]
           : h.holiday_date
       );
-      console.log(`Holidays for ${month}:`, holidayDates);
     } catch (err) {
-      console.error(`Error querying holidays for ${month}:`, err.sqlMessage || err.message);
       holidayDates = [];
     }
 
-    // Fetch leaves (cap end_date to effectiveEndDate)
     const leaves = await queryAsync(
       `SELECT start_date, end_date, leave_type, leave_status, total_days 
        FROM leaves 
        WHERE employee_id = ? AND status = 'Approved' 
        AND start_date <= ? AND end_date >= ?`,
-      [employeeId, effectiveEndDateStr, startDateStr]  // FIX: Use effectiveEndDateStr
+      [employeeId, effectiveEndDateStr, startDateStr]
     );
-    console.log(`Leaves for ${employeeId} in ${month}:`, leaves);
 
     let paidLeaveDays = 0;
     let unpaidLeaveDays = 0;
@@ -111,7 +102,7 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
               ? leave.end_date
               : new Date(leave.end_date)
           ),
-          effectiveEndDate  // FIX: Cap to effectiveEndDate
+          effectiveEndDate
         )
       );
       let days = 0;
@@ -141,40 +132,29 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
       });
     }
 
-    // Fetch attendance (cap to effectiveEndDate)
     const attendance = await queryAsync(
       `SELECT date 
        FROM attendance 
        WHERE employee_id = ? AND status = 'Approved' 
        AND date BETWEEN ? AND ? 
        AND login_time IS NOT NULL`,
-      [employeeId, effectiveStartDate.toISOString().split("T")[0], effectiveEndDateStr]  // FIX: Use effectiveEndDateStr
+      [employeeId, effectiveStartDate.toISOString().split("T")[0], effectiveEndDateStr]
     );
     const validAttendance = attendance.filter((a) => a.date && (typeof a.date === "string" || a.date instanceof Date));
-    if (attendance.length !== validAttendance.length) {
-      console.warn(
-        `Filtered out ${attendance.length - validAttendance.length} invalid attendance records for ${employeeId}`
-      );
-    }
     const presentDays = validAttendance.length;
-    console.log(`Attendance for ${employeeId} in ${month}:`, validAttendance);
 
-    // Convert attendance dates to string format
     const attendanceDates = validAttendance.map((a) => {
       const date = a.date instanceof Date ? a.date.toISOString().split("T")[0] : a.date;
       if (!date || typeof date !== "string") {
-        console.warn(`Invalid date format for attendance record:`, a);
         return null;
       }
       return date;
     }).filter((date) => date !== null);
-    console.log(`Processed attendance dates for ${employeeId}:`, attendanceDates);
 
-    // Calculate potential working days (excluding weekends and holidays)
     let potentialWorkingDays = 0;
     for (
       let d = new Date(effectiveStartDate);
-      d <= effectiveEndDate;  // FIX: Use effectiveEndDate
+      d <= effectiveEndDate;
       d.setDate(d.getDate() + 1)
     ) {
       const dateStr = d.toISOString().split("T")[0];
@@ -185,18 +165,8 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
       }
     }
 
-    // Calculate unaccounted days (potential working days with no attendance or leave record)
-    // These will be treated as paid week-offs (non-working days, no deduction)
     const accountedWorkingDays = presentDays + paidLeaveDays + unpaidLeaveDays;
     const unaccountedWorkingDays = Math.max(0, potentialWorkingDays - accountedWorkingDays);
-    if (unaccountedWorkingDays > 0) {
-      console.log(
-        `Treating ${unaccountedWorkingDays} unaccounted working days as paid week-offs for ${employeeId} in ${month} (no deduction).`
-      );
-    }
-
-    // Set total working days to only include accounted working days (present + paid leave + unpaid leave)
-    // Unaccounted days are excluded (treated as paid non-working days like week-offs)
     const totalWorkingDays = accountedWorkingDays;
 
     const result = {
@@ -208,14 +178,8 @@ const calculateLeaveAndAttendance = async (employeeId, month) => {
       totalWorkingDays,
     };
 
-    console.log(`Result for ${employeeId}, ${month}:`, result);
     return result;
   } catch (err) {
-    console.error(
-      `Error in calculateLeaveAndAttendance for ${employeeId}, ${month}:`,
-      err.message,
-      err.sqlMessage
-    );
     throw new Error(
       `Failed to calculate leave and attendance: ${err.sqlMessage || err.message}`
     );
@@ -278,7 +242,6 @@ const getPayrolls = async (req, res) => {
       queryAsync(countQuery, countParams),
     ]);
 
-    // Parse leave_details from JSON
     const parsedRows = rows.map(row => ({
       ...row,
       leave_details: row.leave_details ? JSON.parse(row.leave_details) : [],
@@ -290,13 +253,13 @@ const getPayrolls = async (req, res) => {
       totalRecords: total,
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage);
     res.status(500).json({
       error: "Database error",
       details: err.sqlMessage || err.message,
     });
   }
 };
+
 const createPayroll = async (req, res) => {
   const userRole = req.user.role;
   if (!["super_admin", "hr"].includes(userRole)) {
@@ -379,7 +342,6 @@ const createPayroll = async (req, res) => {
       data: { id: result.insertId, ...req.body, created_by: req.user.employee_id },
     });
   } catch (err) {
-    console.error("DB error:", err.message, err.sqlMessage);
     res.status(500).json({
       error: "Database error",
       details: err.sqlMessage || err.message,
@@ -396,7 +358,6 @@ const generatePayroll = async (req, res) => {
   const { month } = req.body;
   try {
     validateMonth(month);
-    console.log("Fetching employees...");
     const employees = await queryAsync(
       `SELECT employee_id, full_name, department_name, designation_name, join_date, status, role
        FROM hrms_users
@@ -406,13 +367,11 @@ const generatePayroll = async (req, res) => {
       return res.status(404).json({ error: "No active employees found" });
     }
 
-    console.log("Deleting existing payroll records...");
     await queryAsync("DELETE FROM payroll WHERE month = ?", [month]);
     const payrolls = [];
     const skippedEmployees = [];
 
     for (const emp of employees) {
-      console.log(`Fetching salary structure for ${emp.employee_id}...`);
       const [salaryStructure] = await queryAsync(
         `SELECT basic_salary, hra, special_allowances, bonus, hra_percentage, 
                 provident_fund_percentage, provident_fund, esic_percentage, esic, created_at
@@ -422,7 +381,6 @@ const generatePayroll = async (req, res) => {
         [emp.employee_id]
       );
       if (!salaryStructure) {
-        console.warn(`Skipping employee ${emp.employee_id} due to missing salary structure`);
         skippedEmployees.push({
           employee_id: emp.employee_id,
           full_name: emp.full_name,
@@ -432,7 +390,6 @@ const generatePayroll = async (req, res) => {
       }
 
       if (["employee", "manager"].includes(emp.role) && !emp.join_date) {
-        console.warn(`Skipping employee ${emp.employee_id} due to missing join_date`);
         skippedEmployees.push({
           employee_id: emp.employee_id,
           full_name: emp.full_name,
@@ -504,7 +461,6 @@ const generatePayroll = async (req, res) => {
         present_days: presentDays,
         holidays: holidays,
         total_working_days: totalWorkingDays,
-
       };
 
       try {
@@ -544,7 +500,6 @@ const generatePayroll = async (req, res) => {
           ]
         );
       } catch (insertErr) {
-        console.error(`Failed to insert payroll for ${emp.employee_id}:`, insertErr.message, insertErr.sqlMessage);
         throw insertErr;
       }
 
@@ -562,7 +517,6 @@ const generatePayroll = async (req, res) => {
             ]
           );
         } catch (auditErr) {
-          console.error(`Failed to insert audit log for ${emp.employee_id}:`, auditErr.message, auditErr.sqlMessage);
           throw auditErr;
         }
       }
@@ -584,7 +538,6 @@ const generatePayroll = async (req, res) => {
       skippedEmployees
     });
   } catch (err) {
-    console.error("Error generating payroll:", err.message, err.sqlMessage);
     res.status(500).json({
       error: "Failed to generate payroll",
       details: err.sqlMessage || err.message
@@ -602,14 +555,11 @@ const generatePayrollForEmployee = async (req, res) => {
   }
 
   if (!employeeId || !month) {
-    console.error('Missing required fields:', { employeeId, month });
     return res.status(400).json({ error: "Employee ID and month are required" });
   }
 
   try {
     validateMonth(month);
-    console.log(`Received employeeId: "${employeeId}" (length: ${employeeId.length})`);
-    console.log(`Fetching employee details for "${employeeId}"...`);
     const [employee] = await queryAsync(
       `SELECT employee_id, full_name, department_name, designation_name, join_date, status, role
        FROM hrms_users
@@ -617,15 +567,12 @@ const generatePayrollForEmployee = async (req, res) => {
       [employeeId]
     );
     if (!employee) {
-      console.error(`Employee "${employeeId}" not found in hrms_users`);
       return res.status(404).json({ error: `Employee ${employeeId} not found` });
     }
     if (employee.status !== "active") {
-      console.warn(`Employee "${employeeId}" is not active (status: ${employee.status})`);
       return res.status(400).json({ error: `Employee is not active (status: ${employee.status})` });
     }
 
-    console.log(`Fetching salary structure for "${employeeId}"...`);
     const [salaryStructure] = await queryAsync(
       `SELECT basic_salary, hra, special_allowances, hra_percentage, 
               provident_fund_percentage, provident_fund, esic_percentage, esic, bonus, created_at
@@ -635,36 +582,27 @@ const generatePayrollForEmployee = async (req, res) => {
       [employeeId]
     );
     if (!salaryStructure) {
-      console.warn(`No salary structure found for "${employeeId}"`);
       return res.status(400).json({ error: `No salary structure found for employee ${employeeId}` });
     }
-    console.log(`Salary structure for "${employeeId}":`, salaryStructure);
 
-    console.log(`Checking for existing payroll for "${employeeId}", month ${month}...`);
     const [existingPayroll] = await queryAsync(
       `SELECT id FROM payroll WHERE employee_id = ? AND month = ?`,
       [employeeId, month]
     );
     if (existingPayroll) {
-      console.warn(`Payroll already exists for "${employeeId}" for ${month}`);
       return res.status(400).json({
         error: `Payroll already exists for ${employeeId} for ${month}`,
       });
     }
 
-    console.log(`Calculating leave and attendance for "${employeeId}", month ${month}...`);
     const leaveAndAttendance = await calculateLeaveAndAttendance(employeeId, month);
     const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays, leaveDetails } = leaveAndAttendance;
 
-    console.log(`Leave and attendance for "${employeeId}":`, leaveAndAttendance);
-
-    console.log(`Fetching bank details for "${employeeId}"...`);
     const [bankDetails] = await queryAsync(
       `SELECT bank_account_number, ifsc_number FROM bank_details WHERE employee_id = ?`,
       [employeeId]
     );
 
-    // Helper function to parse numbers safely
     const parseNumber = (value, defaultValue = 0) => {
       const parsed = parseFloat(value);
       return isNaN(parsed) ? defaultValue : parsed;
@@ -672,7 +610,6 @@ const generatePayrollForEmployee = async (req, res) => {
 
     let payrollData;
     if (totalWorkingDays === 0) {
-      console.warn(`No working days for ${employeeId} in ${month}. Generating zero payroll.`);
       payrollData = {
         employee_id: employeeId,
         employee_name: employee.full_name || "Unknown",
@@ -701,7 +638,7 @@ const generatePayrollForEmployee = async (req, res) => {
         total_working_days: totalWorkingDays,
         leave_days: paidLeaveDays + unpaidLeaveDays,
         unpaid_leave_deduction: 0,
-        leave_details: leaveDetails, // Include leave_details
+        leave_details: leaveDetails,
       };
 
       await queryAsync(
@@ -714,7 +651,6 @@ const generatePayrollForEmployee = async (req, res) => {
         ]
       );
     } else {
-      // Parse salary components safely
       const basic_salary = parseNumber(salaryStructure.basic_salary);
       const hra_percentage = parseNumber(salaryStructure.hra_percentage);
       const provident_fund_percentage = parseNumber(salaryStructure.provident_fund_percentage, 0.12);
@@ -726,7 +662,6 @@ const generatePayrollForEmployee = async (req, res) => {
       const esic = parseNumber(salaryStructure.esic);
 
       const gross_salary = basic_salary + hra + special_allowances + bonus;
-      console.log(`Calculated gross_salary for ${employeeId}:`, gross_salary);
 
       const dailyRate = totalWorkingDays > 0 ? gross_salary / totalWorkingDays : 0;
       const effectiveWorkingDays = presentDays + paidLeaveDays;
@@ -738,31 +673,9 @@ const generatePayrollForEmployee = async (req, res) => {
       const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
       const tax_deduction = calculateTax(adjustedGrossSalary);
 
-      // Ensure net_salary is non-negative
       const net_salary = Math.max(0, adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction + unpaidLeaveDeduction));
 
-      // Log intermediate calculations
-      console.log(`Intermediate calculations for ${employeeId}:`, {
-        adjustedGrossSalary,
-        pf_deduction,
-        esic_deduction,
-        professional_tax,
-        tax_deduction,
-        unpaidLeaveDeduction,
-        dailyRate,
-        effectiveWorkingDays,
-        net_salary,
-      });
-
       if (isNaN(net_salary)) {
-        console.error(`Net salary calculation resulted in NaN for ${employeeId}. Forcing net_salary to 0.`, {
-          adjustedGrossSalary,
-          pf_deduction,
-          esic_deduction,
-          professional_tax,
-          tax_deduction,
-          unpaidLeaveDeduction,
-        });
         throw new Error(`Invalid net salary calculation for ${employeeId}`);
       }
 
@@ -794,7 +707,7 @@ const generatePayrollForEmployee = async (req, res) => {
         total_working_days: totalWorkingDays,
         leave_days: paidLeaveDays + unpaidLeaveDays,
         unpaid_leave_deduction: unpaidLeaveDeduction,
-        leave_details: leaveDetails, // Include leave_details
+        leave_details: leaveDetails,
       };
 
       if (unpaidLeaveDays > 0) {
@@ -810,7 +723,6 @@ const generatePayrollForEmployee = async (req, res) => {
       }
     }
 
-    console.log(`Inserting payroll for employee "${employeeId}":`, payrollData);
     const query = `
       INSERT INTO payroll (
         employee_id, employee_name, department, designation_name, gross_salary, pf_deduction, esic_deduction,
@@ -847,10 +759,9 @@ const generatePayrollForEmployee = async (req, res) => {
       payrollData.total_working_days,
       payrollData.leave_days,
       payrollData.unpaid_leave_deduction,
-      JSON.stringify(payrollData.leave_details), // Store as JSON
+      JSON.stringify(payrollData.leave_details),
     ];
 
-    console.log('Executing payroll insert query:', query, 'Values:', values);
     const result = await queryAsync(query, values);
 
     res.status(201).json({
@@ -858,7 +769,6 @@ const generatePayrollForEmployee = async (req, res) => {
       data: { id: result.insertId, ...payrollData },
     });
   } catch (err) {
-    console.error(`Error in generatePayrollForEmployee for "${employeeId}":`, err.message, err.sqlMessage);
     res.status(err.message.includes("No salary structure") ? 400 : 500).json({
       error: `Failed to generate payroll for ${employeeId}`,
       details: err.sqlMessage || err.message,
@@ -908,7 +818,6 @@ const downloadPayrollPDF = async (req, res) => {
 
     let streamEnded = false;
     doc.on("error", (err) => {
-      console.error("PDF stream error:", err.message);
       if (!res.headersSent) {
         res.status(500).json({ error: "Failed to generate PDF", details: err.message });
       }
@@ -941,16 +850,17 @@ const downloadPayrollPDF = async (req, res) => {
       .opacity(1);
 
     const logoPath = path.join(__dirname, "../public/images/company_logo.png");
-    doc.rect(0, 0, 595, 80).fill("#F3F4F6").fillColor("#111827");
+
+    doc.rect(0, 0, 595, 120).fill("#F3F4F6").fillColor("#111827");
+
     if (fs.existsSync(logoPath)) {
-      doc.image(logoPath, 40, 15, { width: 100, height: 50 });
+      doc.image(logoPath, 40, 20, { width: 180, height: 90 });
     } else {
-      console.warn("Logo file not found:", logoPath);
       doc
         .font("Helvetica")
-        .fontSize(12)
+        .fontSize(14)
         .fillColor("#EF4444")
-        .text("Logo Unavailable", 40, 25);
+        .text("Logo Unavailable", 40, 45);
     }
 
     doc
@@ -1063,7 +973,6 @@ const downloadPayrollPDF = async (req, res) => {
     if (fs.existsSync(signaturePath)) {
       doc.image(signaturePath, 400, doc.y + 20, { width: 100, height: 40 });
     } else {
-      console.warn("Signature file not found:", signaturePath);
       doc
         .font("Helvetica")
         .fontSize(10)
@@ -1081,7 +990,6 @@ const downloadPayrollPDF = async (req, res) => {
       doc.end();
     }
   } catch (err) {
-    console.error("Error generating payroll PDF:", err.message, err.sqlMessage);
     if (!res.headersSent) {
       res.status(500).json({
         error: "Failed to generate payroll PDF",

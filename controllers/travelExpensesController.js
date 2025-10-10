@@ -9,7 +9,6 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 
 const uploadDir = path.join(__dirname, "../Uploads");
 if (!fs.existsSync(uploadDir)) {
-  console.log(`Creating upload directory: ${uploadDir}`);
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
@@ -24,7 +23,6 @@ const upload = createMulterInstance(uploadDir, allowedTypes, {
 const submitTravelExpense = async (req, res) => {
   upload.fields([{ name: "receipt", maxCount: 1 }])(req, res, async (err) => {
     if (err) {
-      console.error("Multer error:", err.message, err.code);
       if (err.code === "LIMIT_FILE_SIZE") {
         return res.status(400).json({ error: "Receipt size exceeds 5MB limit" });
       }
@@ -38,9 +36,6 @@ const submitTravelExpense = async (req, res) => {
     const receipt = req.files?.["receipt"]?.[0];
     const { role, id } = req.user;
 
-    console.log("Received data:", { employee_id, travel_date, destination, travel_purpose, total_amount, expenses, receipt: receipt?.filename });
-
-    // Strict validation for required fields
     if (
       !employee_id?.trim() ||
       !travel_date ||
@@ -65,7 +60,6 @@ const submitTravelExpense = async (req, res) => {
         "SELECT employee_id, full_name, department_name FROM hrms_users WHERE employee_id = ? AND full_name IS NOT NULL AND department_name IS NOT NULL",
         [employee_id]
       );
-      console.log("Fetched employee:", employee);
       if (!employee) {
         if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
         return res.status(404).json({ error: "Employee not found or missing required profile data (full_name, department_name)" });
@@ -73,13 +67,11 @@ const submitTravelExpense = async (req, res) => {
       const stringEmployeeId = String(employee.employee_id);
 
       const [user] = await queryAsync("SELECT employee_id, role FROM hrms_users WHERE id = ?", [id]);
-      console.log("Fetched user:", user);
       if (!user || (user.employee_id !== stringEmployeeId && !["super_admin", "hr", "dept_head"].includes(role))) {
         if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
         return res.status(403).json({ error: "Unauthorized to submit for this employee" });
       }
 
-      // Additional check for dept_head: they can only submit for themselves
       if (role === "dept_head" && user.employee_id !== stringEmployeeId) {
         if (receipt && fs.existsSync(receipt.path)) fs.unlinkSync(receipt.path);
         return res.status(403).json({ error: "Department heads can only submit travel expenses for themselves" });
@@ -137,7 +129,6 @@ const submitTravelExpense = async (req, res) => {
           `,
           [stringEmployeeId, travel_date, destination, travel_purpose, total_amount, status, submitted_to, receiptPath]
         );
-        console.log("Insert result:", travelExpenseResult);
 
         const travelExpenseId = travelExpenseResult.insertId;
         for (const exp of parsedExpenses) {
@@ -170,7 +161,6 @@ const submitTravelExpense = async (req, res) => {
         throw error;
       }
     } catch (error) {
-      console.error("Submit error:", error.message, error.sqlMessage, error.code);
       res.status(500).json({ error: "Failed to submit travel expense" });
     }
   });
@@ -182,7 +172,6 @@ const fetchTravelExpenses = async (req, res) => {
 
   try {
     const [user] = await queryAsync("SELECT employee_id, role, department_name FROM hrms_users WHERE id = ?", [id]);
-    console.log("Fetched user for expenses:", user);
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -203,7 +192,6 @@ const fetchTravelExpenses = async (req, res) => {
     let countParams = [];
 
     if (role === "dept_head") {
-      // Department heads see Pending submissions in their department
       query += user.department_name ? " WHERE u.department_name = ? AND te.status = ?" : " WHERE te.status = ?";
       countQuery += user.department_name ? " WHERE u.department_name = ? AND te.status = ?" : " WHERE te.status = ?";
       params = user.department_name ? [user.department_name, "Pending"] : ["Pending"];
@@ -214,7 +202,6 @@ const fetchTravelExpenses = async (req, res) => {
       params = [user.employee_id];
       countParams = [user.employee_id];
     } else if (role === "hr" || role === "super_admin") {
-      // HR and super admins see all Pending submissions
       query += " WHERE te.status = ?";
       countQuery += " WHERE te.status = ?";
       params = ["Pending"];
@@ -228,14 +215,11 @@ const fetchTravelExpenses = async (req, res) => {
       queryAsync(query, params),
       queryAsync(countQuery, countParams),
     ]);
-    console.log("Raw submissions (expenses):", JSON.stringify(submissions, null, 2));
-    console.log("Count result (expenses):", countResult);
 
     const total = countResult[0]?.total || 0;
 
     const groupedSubmissions = submissions.reduce((acc, row) => {
       if (!row.id) {
-        console.warn("Skipping row with missing id:", row);
         return acc;
       }
       const submission = acc.find((s) => s.id === row.id);
@@ -272,8 +256,6 @@ const fetchTravelExpenses = async (req, res) => {
       return acc;
     }, []);
 
-    console.log("Grouped submissions (expenses):", JSON.stringify(groupedSubmissions, null, 2));
-
     res.status(200).json({
       message: groupedSubmissions.length > 0
         ? "Travel expense submissions fetched successfully"
@@ -287,7 +269,6 @@ const fetchTravelExpenses = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Fetch error:", error.message, error.sqlMessage, error.code);
     res.status(500).json({ error: "Failed to fetch submissions" });
   }
 };
@@ -302,7 +283,6 @@ const fetchTravelExpenseHistory = async (req, res) => {
 
   try {
     const [user] = await queryAsync("SELECT employee_id, role, department_name FROM hrms_users WHERE id = ?", [id]);
-    console.log("Fetched user for history:", user);
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -328,14 +308,11 @@ const fetchTravelExpenseHistory = async (req, res) => {
       queryAsync(query, params),
       queryAsync(countQuery, []),
     ]);
-    console.log("Raw submissions (history):", JSON.stringify(submissions, null, 2));
-    console.log("Count result (history):", countResult);
 
     const total = countResult[0]?.total || 0;
 
     const groupedSubmissions = submissions.reduce((acc, row) => {
       if (!row.id) {
-        console.warn("Skipping row with missing id:", row);
         return acc;
       }
       const submission = acc.find((s) => s.id === row.id);
@@ -372,8 +349,6 @@ const fetchTravelExpenseHistory = async (req, res) => {
       return acc;
     }, []);
 
-    console.log("Grouped submissions (history):", JSON.stringify(groupedSubmissions, null, 2));
-
     res.status(200).json({
       message: groupedSubmissions.length > 0
         ? "Travel expense history fetched successfully"
@@ -387,7 +362,6 @@ const fetchTravelExpenseHistory = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Fetch history error:", error.message, error.sqlMessage, error.code);
     res.status(500).json({ error: "Failed to fetch travel expense history" });
   }
 };
@@ -397,7 +371,6 @@ const fetchTravelExpenseById = async (req, res) => {
 
   try {
     const [user] = await queryAsync("SELECT employee_id, role, department_name FROM hrms_users WHERE id = ?", [id]);
-    console.log("Fetched user:", user);
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -467,24 +440,21 @@ const fetchTravelExpenseById = async (req, res) => {
       data: submission,
     });
   } catch (error) {
-    console.error("Fetch error:", error.message, error.sqlMessage, error.code);
     res.status(500).json({ error: "Failed to fetch submission" });
   }
 };
 
 const updateTravelExpenseStatus = async (req, res) => {
-  const { status, admin_comment } = req.body; 
-  const id = req.params.id;  
+  const { status, admin_comment } = req.body;
+  const id = req.params.id;
   const userRole = req.user.role;
-  const userId = req.user.employee_id; 
-  const departmentName = req.user.department_name; 
-
-  console.log("Updating status with payload:", { id, status, admin_comment, userRole, userId, departmentName });
+  const userId = req.user.employee_id;
+  const departmentName = req.user.department_name;
 
   if (!["hr", "super_admin", "dept_head"].includes(userRole)) {
     return res.status(403).json({ error: "Access denied: Insufficient permissions" });
   }
-  if (!id) { 
+  if (!id) {
     return res.status(400).json({ error: "Submission ID is required" });
   }
   if (!status || !["Approved", "Rejected"].includes(status)) {
@@ -496,10 +466,9 @@ const updateTravelExpenseStatus = async (req, res) => {
       `SELECT te.*, u.department_name 
        FROM travel_expenses te
        JOIN hrms_users u ON te.employee_id = u.employee_id
-       WHERE te.id = ? AND te.status = 'Pending'`,  
-      [id] 
+       WHERE te.id = ? AND te.status = 'Pending'`,
+      [id]
     );
-    console.log("Fetched submission for update:", submission);
 
     if (!submission) {
       return res.status(404).json({ error: "Submission not found or not in Pending status" });
@@ -512,13 +481,11 @@ const updateTravelExpenseStatus = async (req, res) => {
       `UPDATE travel_expenses 
        SET status = ?, admin_comment = ?, approved_by = ?, updated_at = NOW()
        WHERE id = ?`,
-      [status, admin_comment || null, userId, id]  
+      [status, admin_comment || null, userId, id]
     );
-    console.log("Updated submission status:", { id, status, admin_comment, approved_by: userId });
 
     res.json({ message: `Travel expense ${status.toLowerCase()} successfully` });
   } catch (err) {
-    console.error("DB error in updateTravelExpenseStatus:", err.message, err.sqlMessage, err.code);
     res.status(500).json({ error: "Database error during status update" });
   }
 };
@@ -529,7 +496,6 @@ const downloadReceipt = async (req, res) => {
 
   try {
     const [user] = await queryAsync("SELECT employee_id, role, department_name FROM hrms_users WHERE id = ?", [id]);
-    console.log("Fetched user:", user);
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -543,10 +509,8 @@ const downloadReceipt = async (req, res) => {
       `,
       [travelExpenseId]
     );
-    console.log("Fetched travel expense for ID", travelExpenseId, ":", travelExpense);
 
     if (!travelExpense) {
-      console.error("No travel expense found for ID:", travelExpenseId);
       return res.status(404).json({ error: "Travel expense not found" });
     }
 
@@ -565,13 +529,11 @@ const downloadReceipt = async (req, res) => {
     const filePath = path.join(uploadDir, filename);
 
     if (!fs.existsSync(filePath)) {
-      console.error("Receipt file not found at:", filePath);
       return res.status(404).json({ error: "Receipt file not found on server" });
     }
 
     res.download(filePath, filename);
   } catch (error) {
-    console.error("Download error:", error.message, error.sqlMessage, error.code);
     res.status(500).json({ error: "Failed to download receipt" });
   }
 };

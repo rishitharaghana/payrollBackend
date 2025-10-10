@@ -10,7 +10,7 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 const uploadDir = path.join(__dirname, "../Uploads");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
-}
+} 
 
 const allowedTypes = {
   receipt: [".jpg", ".jpeg", ".png", ".pdf"],
@@ -277,8 +277,8 @@ const fetchTravelExpenseHistory = async (req, res) => {
   const { role, id } = req.user;
   const { page = 1, limit = 10 } = req.query;
 
-  if (!["super_admin", "hr"].includes(role)) {
-    return res.status(403).json({ error: "Access denied: Only HR and Super Admin can view travel expense history" });
+  if (!["employee", "dept_head", "hr", "super_admin"].includes(role)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
   }
 
   try {
@@ -287,26 +287,37 @@ const fetchTravelExpenseHistory = async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const query = `
+    let query = `
       SELECT te.*, ei.id AS expense_item_id, ei.expense_date, ei.purpose AS expense_purpose, ei.amount,
              u.full_name AS employee_name, u.department_name
       FROM travel_expenses te
       LEFT JOIN expense_items ei ON te.id = ei.travel_expense_id
       LEFT JOIN hrms_users u ON te.employee_id = u.employee_id
       WHERE te.status IN ('Approved', 'Rejected')
-      ORDER BY te.created_at DESC
-      LIMIT ? OFFSET ?
     `;
-    const countQuery = `
+    let countQuery = `
       SELECT COUNT(DISTINCT te.id) as total
       FROM travel_expenses te
+      LEFT JOIN hrms_users u ON te.employee_id = u.employee_id
       WHERE te.status IN ('Approved', 'Rejected')
     `;
-    const params = [Number(limit), Number(limit) * (Number(page) - 1)];
+    let params = [];
+    let countParams = [];
+
+    // Filter by employee_id for employee and dept_head roles
+    if (["employee", "dept_head"].includes(role)) {
+      query += " AND te.employee_id = ?";
+      countQuery += " AND te.employee_id = ?";
+      params.push(user.employee_id);
+      countParams.push(user.employee_id);
+    }
+
+    query += " ORDER BY te.created_at DESC LIMIT ? OFFSET ?";
+    params.push(Number(limit), Number(limit) * (Number(page) - 1));
 
     const [submissions, countResult] = await Promise.all([
       queryAsync(query, params),
-      queryAsync(countQuery, []),
+      queryAsync(countQuery, countParams),
     ]);
 
     const total = countResult[0]?.total || 0;

@@ -1,7 +1,6 @@
 const pool = require('../config/db');
 const util = require('util');
 
-// Import formatCurrency from payrollController.js
 const formatCurrency = (value) => {
   return `₹${(parseFloat(value) || 0).toLocaleString('en-IN', {
     minimumFractionDigits: 2,
@@ -11,7 +10,6 @@ const formatCurrency = (value) => {
 
 const queryAsync = util.promisify(pool.query).bind(pool);
 
-// Define quickActionsByRole with super-admin focus
 const quickActionsByRole = {
   super_admin: [
     { title: 'Manage Employees', icon: 'Users', link: '/admin/employees' },
@@ -91,7 +89,6 @@ const getDashboardData = async (req, res) => {
       );
       statsParams = [deptHead.department_name, userId];
     } else if (role === 'super_admin') {
-      // Super admins see all pending leaves
       statsQuery = statsQuery.replace(
         "WHERE l.status = 'Pending' AND lr.recipient_id = ?",
         "WHERE l.status = 'Pending'"

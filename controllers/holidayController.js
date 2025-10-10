@@ -3,7 +3,6 @@ const pool = require("../config/db");
 
 const queryAsync = util.promisify(pool.query).bind(pool);
 
-// Validate date format (YYYY-MM-DD)
 const validateDate = (date) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     throw new Error("Invalid date format. Use YYYY-MM-DD");
@@ -15,7 +14,6 @@ const validateDate = (date) => {
   return true;
 };
 
-// Create a holiday
 const createHoliday = async (req, res) => {
   const userRole = req.user?.role;
   if (!["super_admin", "hr"].includes(userRole)) {
@@ -55,7 +53,6 @@ const createHoliday = async (req, res) => {
   }
 };
 
-// Get all holidays for a year
 const getHolidays = async (req, res) => {
   const { year } = req.query;
   if (!year || !/^\d{4}$/.test(year)) {
@@ -81,7 +78,6 @@ const getHolidays = async (req, res) => {
   }
 };
 
-// Update a holiday
 const updateHoliday = async (req, res) => {
   const userRole = req.user?.role;
   if (!["super_admin", "hr"].includes(userRole)) {
@@ -122,7 +118,6 @@ const updateHoliday = async (req, res) => {
   }
 };
 
-// Delete a holiday
 const deleteHoliday = async (req, res) => {
   const userRole = req.user?.role;
   if (!["super_admin", "hr"].includes(userRole)) {

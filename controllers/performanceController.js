@@ -390,7 +390,7 @@ const conductAppraisal = async (req, res) => {
     esic_percentage,
     bonus,
     reviewer_id,
-    goals, // Add goals to destructured req.body
+    goals,
   } = req.body;
   const default_reviewer_id = req.user.employee_id;
 
@@ -797,26 +797,6 @@ const conductAppraisal = async (req, res) => {
         }
       }
 
-      // Insert performance bonus leave if score >= 90
-      if (score >= 90) {
-        const year = new Date().getFullYear();
-        const leaveResult = await queryAsync(
-          "SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type = ? AND year = ?",
-          [employee_id, "Annual", year]
-        );
-        if (leaveResult.length === 0) {
-          await queryAsync(
-            "INSERT INTO leave_balances (employee_id, leave_type, year, balance, performance_bonus) VALUES (?, ?, ?, ?, ?)",
-            [employee_id, "Annual", year, 2, 2]
-          );
-        } else {
-          await queryAsync(
-            "UPDATE leave_balances SET balance = balance + 2, performance_bonus = COALESCE(performance_bonus, 0) + 2 WHERE employee_id = ? AND leave_type = ? AND year = ?",
-            [employee_id, "Annual", year]
-          );
-        }
-      }
-
       await new Promise((resolve, reject) => {
         connection.commit(err => {
           if (err) reject(err);
@@ -835,7 +815,7 @@ const conductAppraisal = async (req, res) => {
           new_department_name: promotion_recommended ? new_department_name : null,
           salary_hike_percentage: salaryHike,
           salary_structure_id: new_salary_structure_id,
-          goals: insertedGoals, // Include goals in response
+          goals: insertedGoals,
         },
       });
     } catch (error) {

@@ -20,8 +20,8 @@ const companyRouter = require('./routes/companyRoutes');
 const vistingRouter = require('./routes/visitingRoutes')
 const dashboardRouter = require('./routes/dashboardRoutes')
 const allowedOrigins = [
-  'http://localhost:3004',
- 'https://fe2663e99cb4.ngrok-free.app',
+  'http://localhost:3003',
+''
 ];
 const holidayRouter = require('./routes/holidayRoutes');
 

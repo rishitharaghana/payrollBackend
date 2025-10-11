@@ -21,7 +21,7 @@ const vistingRouter = require('./routes/visitingRoutes')
 const dashboardRouter = require('./routes/dashboardRoutes')
 const allowedOrigins = [
   'http://localhost:3003',
-''
+'https://payroll.mntechs.com'
 ];
 const holidayRouter = require('./routes/holidayRoutes');
 

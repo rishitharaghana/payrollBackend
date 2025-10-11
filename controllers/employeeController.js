@@ -1039,7 +1039,8 @@ const createDocuments = async (req, res) => {
         return res.status(404).json({ error: `${userRole} not found` });
       }
 
-      const baseUrl = "http://localhost:3007/uploads/";
+      // const baseUrl = "http://localhost:3007/uploads/";
+      const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
       const fileExtension = path.extname(document.originalname).toLowerCase();
       const timestamp = Date.now();
       const safeFileName = `${employeeId}_${documentType}_${timestamp}${fileExtension}`;

@@ -1177,12 +1177,11 @@ const fetchEmployees = async (req, res) => {
   try {
     const userRole = req.user.role;
     const userDept = req.user.department;
+    const userId = req.user.id;
 
     if (!["super_admin", "hr", "manager", "dept_head"].includes(userRole)) {
       return res.status(403).json({ error: "Access denied" });
     }
-
-    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
 
     let sql = `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, 
                       address, employment_type, join_date, dob, blood_group, gender, emergency_phone, 
@@ -1192,17 +1191,22 @@ const fetchEmployees = async (req, res) => {
 
     const params = [];
 
-    if (userRole === "dept_head" || userRole === "manager") {
+    if (userRole === "super_admin") {
+      sql += ` AND id != ?`;
+      params.push(userId);
+    } else if (userRole === "hr") {
+      sql += ` AND id != ? AND role NOT IN ('hr', 'super_admin')`;
+      params.push(userId);
+    } else if (["dept_head", "manager"].includes(userRole)) {
       if (!userDept) {
         return res.status(400).json({ error: "User department is not defined" });
       }
-      sql += ` AND department_name = ? AND role IN ('dept_head', 'manager', 'employee')`;
+      sql += ` AND department_name = ? AND role IN ('dept_head','manager','employee')`;
       params.push(userDept);
     }
 
     const employees = await queryAsync(sql, params);
 
-    // Format response to ensure consistent data
     const formattedEmployees = employees.map(emp => ({
       ...emp,
       photo_url: emp.photo_url || null,

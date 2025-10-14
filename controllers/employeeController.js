@@ -20,18 +20,29 @@ const upload = createMulterInstance(uploadDir, allowedTypes, {
   fileSize: 5 * 1024 * 1024,
 });
 
-const generateEmployeeId = async () => {
+const generateEmployeeId = async (customSuffix) => {
   const prefix = "MO-EMP-";
-  const [lastEmployee] = await queryAsync(
-    `SELECT employee_id FROM hrms_users WHERE employee_id LIKE ? 
-     ORDER BY CAST(SUBSTRING(employee_id, LENGTH(?) + 1) AS UNSIGNED) DESC LIMIT 1`,
-    [`${prefix}%`, prefix]
+
+  // Validate custom suffix
+  if (!customSuffix || typeof customSuffix !== "string") {
+    throw new Error("Custom suffix is required and must be a string");
+  }
+  // Allow only numeric characters (0-9), 1-10 digits
+  if (!/^[0-9]{1,10}$/.test(customSuffix)) {
+    throw new Error("Custom suffix must be numeric and between 1-10 digits");
+  }
+
+  // Check if the employee_id with the custom suffix already exists
+  const [existingEmployee] = await queryAsync(
+    `SELECT employee_id FROM hrms_users WHERE employee_id = ?`,
+    [`${prefix}${customSuffix}`]
   );
-  return lastEmployee
-    ? `${prefix}${String(
-        parseInt(lastEmployee.employee_id.replace(prefix, "")) + 1
-      ).padStart(3, "0")}`
-    : `${prefix}001`;
+
+  if (existingEmployee) {
+    throw new Error(`Employee ID with suffix '${customSuffix}' already exists`);
+  }
+
+  return `${prefix}${customSuffix}`;
 };
 
 const createEmployee = async (req, res) => {
@@ -74,6 +85,7 @@ const createEmployee = async (req, res) => {
       esic_percentage,
       esic,
       bonus,
+      custom_employee_id_suffix, // New field for custom suffix
     } = req.body;
     const photo = req.files?.["photo"]?.[0];
 
@@ -229,7 +241,8 @@ const createEmployee = async (req, res) => {
         return res.status(400).json({ error: "Email already in use" });
       }
 
-      const employeeId = await generateEmployeeId();
+      // Generate employee ID with custom suffix
+      const employeeId = await generateEmployeeId(custom_employee_id_suffix);
       const hashedPassword = await bcrypt.hash(password, 10);
       const baseUrl =
         process.env.UPLOADS_BASE_URL || `http://localhost:3007/uploads/`;
@@ -365,6 +378,9 @@ const createEmployee = async (req, res) => {
       });
     } catch (err) {
       await queryAsync("ROLLBACK");
+      if (err.message.includes("Custom suffix")) {
+        return res.status(400).json({ error: err.message });
+      }
       if (err.code === "ER_BAD_FIELD_ERROR") {
         return res.status(500).json({
           error: "Database schema mismatch",
@@ -1166,25 +1182,38 @@ const fetchEmployees = async (req, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const baseUrl =
-      process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+    const baseUrl = process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
 
-    let sql = `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, address, employment_type, join_date, dob, blood_group, gender, emergency_phone, role, photo_url
+    let sql = `SELECT id, employee_id, full_name, email, mobile, department_name, designation_name, 
+                      address, employment_type, join_date, dob, blood_group, gender, emergency_phone, 
+                      role, photo_url, status 
                FROM hrms_users 
-               WHERE role IN ('dept_head', 'manager', 'employee')`;
+               WHERE status = 'active'`;
 
     const params = [];
 
     if (userRole === "dept_head" || userRole === "manager") {
-      sql += ` AND department_name = ?`;
+      if (!userDept) {
+        return res.status(400).json({ error: "User department is not defined" });
+      }
+      sql += ` AND department_name = ? AND role IN ('dept_head', 'manager', 'employee')`;
       params.push(userDept);
     }
 
     const employees = await queryAsync(sql, params);
 
-    res.json({ message: "Employees fetched successfully", data: employees });
+    // Format response to ensure consistent data
+    const formattedEmployees = employees.map(emp => ({
+      ...emp,
+      photo_url: emp.photo_url || null,
+      department_name: emp.department_name || null,
+      designation_name: emp.designation_name || null,
+      status: emp.status || "active",
+    }));
+
+    res.json({ message: "Employees fetched successfully", data: formattedEmployees });
   } catch (err) {
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ error: `Database error: ${err.message}` });
   }
 };
 
@@ -1677,7 +1706,7 @@ const getEmployeeDocuments = async (req, res) => {
     }
 
     const baseUrl =
-      process.env.UPLOADS_BASE_URL || "http://localhost:3007/uploads/";
+      process.env.UPLOADS_BASE_URL || "http://localhost:4002/uploads/";
     const documents = await queryAsync(
       `SELECT id, employee_id, document_type,
               CASE

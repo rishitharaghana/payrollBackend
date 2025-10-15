@@ -242,10 +242,18 @@ const getPayrolls = async (req, res) => {
       queryAsync(countQuery, countParams),
     ]);
 
-    const parsedRows = rows.map(row => ({
-      ...row,
-      leave_details: row.leave_details ? JSON.parse(row.leave_details) : [],
-    }));
+    // ✅ Safely parse leave_details
+    const parsedRows = rows.map(row => {
+      let leaveDetails = [];
+      if (row.leave_details) {
+        try {
+          leaveDetails = JSON.parse(row.leave_details);
+        } catch {
+          leaveDetails = [];
+        }
+      }
+      return { ...row, leave_details: leaveDetails };
+    });
 
     res.json({
       message: "Payroll fetched successfully",
@@ -548,7 +556,7 @@ const generatePayroll = async (req, res) => {
 const generatePayrollForEmployee = async (req, res) => {
   const userRole = req.user?.role;
   const userId = req.user?.employee_id;
-  const { employeeId, month } = req.body;
+  const { employeeId, month, manualData = {} } = req.body;
 
   if (!["super_admin", "hr"].includes(userRole)) {
     return res.status(403).json({ error: "Access denied: Insufficient permissions" });
@@ -560,6 +568,17 @@ const generatePayrollForEmployee = async (req, res) => {
 
   try {
     validateMonth(month);
+
+    // Helper to get manual value with fallback and type handling
+    const getManual = (key, fallback) => {
+      const value = manualData[key];
+      if (value === undefined || value === null) return fallback;
+      if (typeof value === 'number') return value;
+      if (key === 'leaveDetails') return value; // Array, will be stringified later
+      const parsed = parseFloat(value);
+      return isNaN(parsed) ? fallback : parsed;
+    };
+
     const [employee] = await queryAsync(
       `SELECT employee_id, full_name, department_name, designation_name, join_date, status, role
        FROM hrms_users
@@ -595,8 +614,24 @@ const generatePayrollForEmployee = async (req, res) => {
       });
     }
 
-    const leaveAndAttendance = await calculateLeaveAndAttendance(employeeId, month);
-    const { paidLeaveDays, unpaidLeaveDays, presentDays, holidays, totalWorkingDays, leaveDetails } = leaveAndAttendance;
+    // Auto-calculate leave and attendance (fallback if not manual)
+    const autoLeaveAndAttendance = await calculateLeaveAndAttendance(employeeId, month);
+    const {
+      paidLeaveDays: autoPaidLeaveDays,
+      unpaidLeaveDays: autoUnpaidLeaveDays,
+      presentDays: autoPresentDays,
+      holidays: autoHolidays,
+      totalWorkingDays: autoTotalWorkingDays,
+      leaveDetails: autoLeaveDetails,
+    } = autoLeaveAndAttendance;
+
+    // Apply manual overrides for attendance/leaves
+    const paidLeaveDays = getManual('paidLeaveDays', autoPaidLeaveDays);
+    const unpaidLeaveDays = getManual('unpaidLeaveDays', autoUnpaidLeaveDays);
+    const presentDays = getManual('presentDays', autoPresentDays);
+    const holidays = getManual('holidays', autoHolidays); // If needed, though not in UI
+    const totalWorkingDays = getManual('totalWorkingDays', autoTotalWorkingDays);
+    const leaveDetails = getManual('leaveDetails', autoLeaveDetails);
 
     const [bankDetails] = await queryAsync(
       `SELECT bank_account_number, ifsc_number FROM bank_details WHERE employee_id = ?`,
@@ -651,15 +686,21 @@ const generatePayrollForEmployee = async (req, res) => {
         ]
       );
     } else {
-      const basic_salary = parseNumber(salaryStructure.basic_salary);
-      const hra_percentage = parseNumber(salaryStructure.hra_percentage);
-      const provident_fund_percentage = parseNumber(salaryStructure.provident_fund_percentage, 0.12);
-      const esic_percentage = parseNumber(salaryStructure.esic_percentage, 0.0075);
-      const hra = parseNumber(salaryStructure.hra) || (hra_percentage * basic_salary) / 100 || 0;
-      const special_allowances = parseNumber(salaryStructure.special_allowances);
-      const bonus = parseNumber(salaryStructure.bonus);
-      const provident_fund = parseNumber(salaryStructure.provident_fund);
-      const esic = parseNumber(salaryStructure.esic);
+      const baseBasicSalary = parseNumber(salaryStructure.basic_salary);
+      const baseHraPercentage = parseNumber(salaryStructure.hra_percentage);
+      const baseProvidentFundPercentage = parseNumber(salaryStructure.provident_fund_percentage, 0.12);
+      const baseEsicPercentage = parseNumber(salaryStructure.esic_percentage, 0.0075);
+      const baseHra = parseNumber(salaryStructure.hra) || (baseHraPercentage * baseBasicSalary) / 100 || 0;
+      const baseSpecialAllowances = parseNumber(salaryStructure.special_allowances);
+      const baseBonus = parseNumber(salaryStructure.bonus);
+      const baseProvidentFund = parseNumber(salaryStructure.provident_fund);
+      const baseEsic = parseNumber(salaryStructure.esic);
+
+      // Manual overrides for salary components
+      const basic_salary = getManual('basicSalary', baseBasicSalary);
+      const hra = getManual('hra', baseHra);
+      const special_allowances = getManual('allowances', baseSpecialAllowances);
+      const bonus = getManual('bonus', baseBonus); // If needed
 
       const gross_salary = basic_salary + hra + special_allowances + bonus;
 
@@ -668,10 +709,11 @@ const generatePayrollForEmployee = async (req, res) => {
       const adjustedGrossSalary = dailyRate * effectiveWorkingDays;
       const unpaidLeaveDeduction = unpaidLeaveDays * dailyRate;
 
-      const pf_deduction = provident_fund || Math.min(adjustedGrossSalary * provident_fund_percentage, 1800);
-      const esic_deduction = esic || (adjustedGrossSalary <= 21000 ? adjustedGrossSalary * esic_percentage : 0);
+      // Manual overrides for deductions (fallback to auto)
+      const pf_deduction = getManual('pfDeduction', baseProvidentFund || Math.min(adjustedGrossSalary * baseProvidentFundPercentage, 1800));
+      const esic_deduction = getManual('esicDeduction', baseEsic || (adjustedGrossSalary <= 21000 ? adjustedGrossSalary * baseEsicPercentage : 0)); // esicDeduction not in UI, but safe
       const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
-      const tax_deduction = calculateTax(adjustedGrossSalary);
+      const tax_deduction = getManual('taxDeduction', calculateTax(adjustedGrossSalary));
 
       const net_salary = Math.max(0, adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction + unpaidLeaveDeduction));
 
@@ -775,6 +817,132 @@ const generatePayrollForEmployee = async (req, res) => {
     });
   }
 };
+
+
+const canViewEmployeeDetails = (viewerRole, viewerId, targetRole, targetId) => {
+  if (viewerRole === 'super_admin') return true;
+  if (viewerRole === 'hr') {
+    return !['super_admin', 'hr'].includes(targetRole); // HR can view employee, dept_head, manager
+  }
+  return false; // Other roles (e.g., dept_head, manager) denied here; handle in routes if needed
+};
+
+const getEmployeePayrollDetails = async (req, res) => {
+  const userRole = req.user?.role;
+  const userId = req.user?.employee_id;
+  const { employeeId, month } = req.query;
+
+  if (!['super_admin', 'hr'].includes(userRole)) {
+    return res.status(403).json({ error: "Access denied: Insufficient permissions" });
+  }
+
+  if (!employeeId || !month) {
+    return res.status(400).json({ error: "Employee ID and month are required" });
+  }
+
+  try {
+    validateMonth(month);
+
+    const [employee] = await queryAsync(
+      `SELECT employee_id, full_name, department_name, designation_name, join_date, status, role
+       FROM hrms_users WHERE employee_id = ?`,
+      [employeeId]
+    );
+    if (!employee) {
+      return res.status(404).json({ error: `Employee ${employeeId} not found` });
+    }
+
+    // Permission check
+    if (!canViewEmployeeDetails(userRole, userId, employee.role, employeeId)) {
+      return res.status(403).json({ error: "Access denied: Cannot view details for this employee role" });
+    }
+
+    if (employee.status !== 'active') {
+      return res.status(400).json({ error: `Employee is not active (status: ${employee.status})` });
+    }
+
+    const [salaryStructure] = await queryAsync(
+      `SELECT basic_salary, hra, special_allowances, bonus, hra_percentage, 
+              provident_fund_percentage, provident_fund, esic_percentage, esic, created_at
+       FROM employee_salary_structure 
+       WHERE employee_id = ?
+       ORDER BY created_at DESC LIMIT 1`,
+      [employeeId]
+    );
+
+    const { paidLeaveDays, unpaidLeaveDays, leaveDetails, presentDays, holidays, totalWorkingDays } = 
+      await calculateLeaveAndAttendance(employeeId, month);
+
+    const [bankDetails] = await queryAsync(
+      `SELECT bank_account_number, ifsc_number FROM bank_details WHERE employee_id = ?`,
+      [employeeId]
+    );
+
+    // Calculate preview payroll (similar logic to generatePayrollForEmployee, but no insert)
+    let preview = {
+      employee: {
+        employee_id: employee.employee_id,
+        full_name: employee.full_name,
+        department_name: employee.department_name,
+        designation_name: employee.designation_name,
+        role: employee.role,
+      },
+      salaryStructure: salaryStructure || null,
+      attendance: {
+        paidLeaveDays,
+        unpaidLeaveDays,
+        presentDays,
+        holidays,
+        totalWorkingDays,
+        leaveDetails,
+      },
+      bankDetails: bankDetails || null,
+      calculated: {},
+    };
+
+    if (salaryStructure && totalWorkingDays > 0) {
+      const hra = Number(salaryStructure.hra) || (Number(salaryStructure.hra_percentage || 0) * Number(salaryStructure.basic_salary || 0) / 100);
+      const gross_salary = Number(salaryStructure.basic_salary || 0) + hra + Number(salaryStructure.special_allowances || 0) + Number(salaryStructure.bonus || 0);
+      const dailyRate = gross_salary / totalWorkingDays;
+      const effectiveWorkingDays = presentDays + paidLeaveDays;
+      const adjustedGrossSalary = effectiveWorkingDays * dailyRate;
+      const unpaidLeaveDeduction = unpaidLeaveDays * dailyRate;
+
+      const pf_deduction = Number(salaryStructure.provident_fund) || Math.min(adjustedGrossSalary * ((Number(salaryStructure.provident_fund_percentage) || 12) / 100), 1800);
+      const esic_deduction = Number(salaryStructure.esic) || (adjustedGrossSalary <= 21000 ? adjustedGrossSalary * ((Number(salaryStructure.esic_percentage) || 0.75) / 100) : 0);
+      const professional_tax = adjustedGrossSalary <= 15000 ? 0 : 200;
+      const tax_deduction = calculateTax(adjustedGrossSalary);
+
+      const net_salary = adjustedGrossSalary - (pf_deduction + esic_deduction + professional_tax + tax_deduction + unpaidLeaveDeduction);
+
+      preview.calculated = {
+        gross_salary,
+        adjustedGrossSalary,
+        basic_salary: (Number(salaryStructure.basic_salary || 0) * effectiveWorkingDays / totalWorkingDays),
+        hra: (hra * effectiveWorkingDays / totalWorkingDays),
+        special_allowances: (Number(salaryStructure.special_allowances || 0) * effectiveWorkingDays / totalWorkingDays),
+        bonus: (Number(salaryStructure.bonus || 0) * effectiveWorkingDays / totalWorkingDays),
+        pf_deduction,
+        esic_deduction,
+        professional_tax,
+        tax_deduction,
+        unpaid_leave_deduction: unpaidLeaveDeduction,
+        net_salary,
+      };
+    }
+
+    res.json({
+      message: "Employee payroll details fetched successfully",
+      data: preview,
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: "Failed to fetch employee details",
+      details: err.sqlMessage || err.message,
+    });
+  }
+};
+
 
 const downloadPayrollPDF = async (req, res) => {
   const userRole = req.user?.role;
@@ -999,11 +1167,12 @@ const downloadPayrollPDF = async (req, res) => {
   }
 };
 
-module.exports = {
+module.exports = {  
   getPayrolls,
   createPayroll,
   generatePayroll,
   generatePayrollForEmployee,
   downloadPayrollPDF,
   calculateLeaveAndAttendance,
+  getEmployeePayrollDetails,
 };

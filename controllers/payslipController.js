@@ -9,7 +9,7 @@ const queryAsync = util.promisify(pool.query).bind(pool);
 
 const COMPANY_CONFIG = {
   company_id: 1,
-  company_name: "MNTechs Solutions Pvt Ltd",
+  company_name: "Meet Owner Pvt Ltd",
   company_pan: "ABCDE1234F",
   company_gstin: "12ABCDE1234F1Z5",
   address: "123 Business Street, City, Country",
